@@ -15,7 +15,7 @@ The development app currently:
 - Pastes each finalized utterance at the cursor in the frontmost app.
 - Flushes pending audio when dictation stops so the ending is not truncated.
 
-The current transcription backend is Speech Swift's Parakeet EOU 120M streaming ASR model with Silero VAD. The intended next backend is Speech Swift's Nemotron 3.5 streaming ASR implementation. Keeping that migration in this repository makes it possible to develop app-specific behavior, language selection, model lifecycle, and keybinding preferences without modifying the Speech Swift repository.
+The current transcription backend is Speech Swift's Nemotron 3.5 streaming ASR model with Silero VAD. Sessions currently use `en-US` for predictable English dictation. The backend is isolated behind an app-local streaming session interface and factory so model-specific transcripts and lifecycle rules do not leak into the view model.
 
 This is currently a Swift Package Manager development executable. Packaging, signing, configurable shortcuts, login-item support, and an installable macOS app bundle are future work.
 
@@ -100,7 +100,7 @@ Commit the updated submodule pointer together with any required app changes.
 
 ## Roadmap
 
-- Replace Parakeet with `NemotronStreamingASR` and expose language/model options.
+- Expose language/model options using the existing backend boundary.
 - Add configurable global keybindings.
 - Produce a signed, installable macOS app bundle.
 - Add launch-at-login support so dictation shortcuts are always available.

@@ -124,6 +124,56 @@ final class PartialCommitTrackerTests: XCTestCase {
         XCTAssertTrue(tracker.state.stableTokens.isEmpty)
     }
 
+    func testFailedFinalInsertionDoesNotAdvanceOrResetState() {
+        var tracker = PartialCommitTracker()
+        let observation = tracker.observe(
+            "keep this text",
+            at: clock.now,
+            forceFinalization: true
+        )
+
+        XCTAssertNotNil(observation.candidate)
+        // The caller only invokes didInsert and reset after destination
+        // insertion succeeds.
+        XCTAssertEqual(tracker.state.latestPartial, "keep this text")
+        XCTAssertEqual(tracker.state.stableTokens.count, 3)
+        XCTAssertTrue(tracker.state.committedNormalizedTokens.isEmpty)
+    }
+
+    func testCumulativeFinalCommitsOnlySuffixAfterPartialCommit() throws {
+        var tracker = PartialCommitTracker()
+        let start = clock.now
+        let text = "one two three four five six"
+        _ = tracker.observe(text, at: start)
+        let partial = tracker.observe(
+            text,
+            at: start.advanced(by: .seconds(1.7))
+        )
+        tracker.didInsert(try XCTUnwrap(partial.candidate))
+
+        let final = tracker.observe(
+            text,
+            at: start.advanced(by: .seconds(2)),
+            forceFinalization: true
+        )
+
+        XCTAssertEqual(final.candidate?.renderedText, "four five six")
+        XCTAssertEqual(final.candidate?.normalizedTokens, ["four", "five", "six"])
+    }
+
+    func testIdenticalWordsInConsecutiveUtterancesAreEachCommittedOnce() throws {
+        var tracker = PartialCommitTracker()
+        let text = "repeat these words"
+
+        let first = tracker.observe(text, at: clock.now, forceFinalization: true)
+        XCTAssertEqual(first.candidate?.renderedText, text)
+        tracker.didInsert(try XCTUnwrap(first.candidate))
+        tracker.reset()
+
+        let second = tracker.observe(text, at: clock.now, forceFinalization: true)
+        XCTAssertEqual(second.candidate?.renderedText, text)
+    }
+
     func testDivergentCommittedPrefixAlignsWithoutReplayingCommittedWords() {
         var tracker = PartialCommitTracker()
         let start = clock.now

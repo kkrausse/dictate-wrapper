@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import ParakeetStreamingASR
+import NemotronStreamingASR
 import SpeechVAD
 
 let logPath = "/tmp/dictate.log"
@@ -26,12 +26,12 @@ private func logTimestamp() -> String {
 
 /// Owns the mutable streaming state used by the off-main-thread audio pipeline.
 final class ASRProcessor: @unchecked Sendable {
-    let session: StreamingSession
+    private let sessions: StreamingSessionManager
     private let vad: SileroVADModel
     private let lock = NSLock()
     private let buffer = UnsafeMutablePointer<[Float]>.allocate(capacity: 1)
     private let vadLeftover = UnsafeMutablePointer<[Float]>.allocate(capacity: 1)
-    private let pendingPartials = UnsafeMutablePointer<[ParakeetStreamingASRModel.PartialTranscript]>.allocate(capacity: 1)
+    private let pendingPartials = UnsafeMutablePointer<[StreamingTranscript]>.allocate(capacity: 1)
     private let allAudio = UnsafeMutablePointer<[Float]>.allocate(capacity: 1)
     nonisolated(unsafe) var speechActive = false
     nonisolated(unsafe) var silenceCount = 0
@@ -41,8 +41,8 @@ final class ASRProcessor: @unchecked Sendable {
     // 30 VAD chunks at 512 samples and 16 kHz is about 960 ms of silence.
     private let forceFinalizeSilentChunks = 30
 
-    init(session: StreamingSession, vad: SileroVADModel) {
-        self.session = session
+    init(backend: StreamingASRBackend, vad: SileroVADModel) throws {
+        sessions = try StreamingSessionManager(backend: backend)
         self.vad = vad
         buffer.initialize(to: [])
         vadLeftover.initialize(to: [])
@@ -114,14 +114,14 @@ final class ASRProcessor: @unchecked Sendable {
         return buffer.pointee.count
     }
 
-    func enqueuePartials(_ partials: [ParakeetStreamingASRModel.PartialTranscript]) {
+    func enqueuePartials(_ partials: [StreamingTranscript]) {
         guard !partials.isEmpty else { return }
         lock.lock()
         pendingPartials.pointee.append(contentsOf: partials)
         lock.unlock()
     }
 
-    func takePendingPartials() -> [ParakeetStreamingASRModel.PartialTranscript] {
+    func takePendingPartials() -> [StreamingTranscript] {
         lock.lock()
         defer { lock.unlock() }
         let partials = pendingPartials.pointee
@@ -130,7 +130,7 @@ final class ASRProcessor: @unchecked Sendable {
     }
 
     func processBuffered() -> (
-        partials: [ParakeetStreamingASRModel.PartialTranscript],
+        partials: [StreamingTranscript],
         speaking: Bool
     ) {
         lock.lock()
@@ -168,24 +168,25 @@ final class ASRProcessor: @unchecked Sendable {
         lastRms = rms
         do {
             appendDebugAudio(chunk)
-            var partials = try session.pushAudio(chunk)
+            var partials = try sessions.pushAudio(chunk)
 
-            // Do not force-finalize an utterance that the model's EOU head has
-            // already completed.
+            // A future backend may provide native final callbacks.
             if partials.contains(where: { $0.isFinal }) {
                 hasPendingUtterance = false
             }
 
-            // Room noise can keep the model EOU debounce alive. Silero's
-            // sustained-silence signal provides a more reliable cutoff.
+            // Nemotron has no EOU head, so sustained VAD silence is the
+            // automatic utterance boundary.
             if hasPendingUtterance
                 && !speechActive
                 && silenceCount >= forceFinalizeSilentChunks
             {
-                if let forced = session.forceEndOfUtterance() {
-                    dlog("FORCE-FINAL via VAD: '\(forced.text)'")
-                    partials.append(forced)
-                }
+                let boundary = sessions.finalize(
+                    reason: .vadFinalization,
+                    recreateSession: true
+                )
+                partials.append(contentsOf: boundary.transcripts)
+                logBoundaryResult(boundary, reason: .vadFinalization)
                 hasPendingUtterance = false
             }
 
@@ -202,31 +203,44 @@ final class ASRProcessor: @unchecked Sendable {
         }
     }
 
-    func finalize() -> [ParakeetStreamingASRModel.PartialTranscript] {
+    func finalize() -> [StreamingTranscript] {
         let (bufferedPartials, _) = processBuffered()
-        do {
-            // Advance delayed encoder emissions so stopping does not truncate
-            // the final words instead of waiting for real microphone post-roll.
-            let flushed = try session.pushAudio([Float](repeating: 0, count: 8_000))
-            let finalized = try session.finalize()
-            logRawPartials(flushed, source: "stop-flush")
-            logRawPartials(finalized, source: "explicit-finalize")
-            return bufferedPartials + flushed + finalized
-        } catch {
-            dlog("[\(logTimestamp())] PARAKEET explicit-finalize error=\(String(reflecting: String(describing: error)))")
-            return bufferedPartials
-        }
+        let boundary = sessions.finalize(
+            reason: .explicitStopFinalization,
+            recreateSession: false
+        )
+        logBoundaryResult(boundary, reason: .explicitStopFinalization)
+        logRawPartials(boundary.transcripts, source: "explicit-finalize")
+        return bufferedPartials + boundary.transcripts
     }
 
     private func logRawPartials(
-        _ partials: [ParakeetStreamingASRModel.PartialTranscript],
+        _ partials: [StreamingTranscript],
         source: String
     ) {
         for partial in partials {
             dlog(
-                "[\(logTimestamp())] PARAKEET raw source=\(source) segment=\(partial.segmentIndex) "
-                    + "final=\(partial.isFinal) eou=\(partial.eouDetected) text=\(String(reflecting: partial.text))"
+                "[\(logTimestamp())] \(sessions.backendName) raw source=\(source) segment=\(partial.segmentIndex) "
+                    + "final=\(partial.isFinal) boundary=\(partial.boundaryReason?.rawValue ?? "none") "
+                    + "text=\(String(reflecting: partial.text))"
             )
+        }
+    }
+
+    private func logBoundaryResult(
+        _ result: StreamingSessionBoundaryResult,
+        reason: BoundaryReason
+    ) {
+        let segment = result.segmentIndex ?? sessions.segmentIndex
+        dlog("[\(logTimestamp())] \(sessions.backendName) boundary reason=\(reason.rawValue) segment=\(segment)")
+        if reason == .vadFinalization, result.recreationError == nil {
+            dlog("[\(logTimestamp())] \(sessions.backendName) session-recreated next-segment=\(sessions.segmentIndex)")
+        }
+        if let error = result.finalizationError {
+            dlog("[\(logTimestamp())] \(sessions.backendName) finalize-error reason=\(reason.rawValue) error=\(String(reflecting: String(describing: error)))")
+        }
+        if let error = result.recreationError {
+            dlog("[\(logTimestamp())] \(sessions.backendName) recreation-error error=\(String(reflecting: String(describing: error)))")
         }
     }
 }
@@ -241,7 +255,7 @@ final class DictateViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var isSpeechActive = false
 
-    private var model: ParakeetStreamingASRModel?
+    private var model: NemotronStreamingASRModel?
     private var vad: SileroVADModel?
     private var processor: ASRProcessor?
     private var globalHotKey: GlobalHotKey?
@@ -250,6 +264,9 @@ final class DictateViewModel: ObservableObject {
     private let processQueue = DispatchQueue(label: "dictate.asr", qos: .userInteractive)
     private var processTimer: DispatchSourceTimer?
     private var partialCommitTracker = PartialCommitTracker()
+    // Keep language policy at the app/backend boundary so it can become a
+    // preference without changing the processor lifecycle.
+    private let transcriptionLanguage: String? = "en-US"
 
     var modelLoaded: Bool { model != nil && vad != nil }
 
@@ -286,7 +303,7 @@ final class DictateViewModel: ObservableObject {
 
         do {
             let loaded = try await Task.detached {
-                try await ParakeetStreamingASRModel.fromPretrained { [weak self] progress, status in
+                let loaded = try await NemotronStreamingASRModel.fromPretrained { [weak self] progress, status in
                     DispatchQueue.main.async {
                         let percent = Int(progress * 100)
                         self?.loadingStatus = status.isEmpty
@@ -294,9 +311,12 @@ final class DictateViewModel: ObservableObject {
                             : "\(status) (\(percent)%)"
                     }
                 }
+                DispatchQueue.main.async { [weak self] in
+                    self?.loadingStatus = "Warming up..."
+                }
+                try loaded.warmUp()
+                return loaded
             }.value
-            loadingStatus = "Warming up..."
-            try loaded.warmUp()
             model = loaded
 
             loadingStatus = "Loading VAD..."
@@ -304,7 +324,7 @@ final class DictateViewModel: ObservableObject {
                 try await SileroVADModel.fromPretrained(engine: .coreml)
             }.value
             loadingStatus = ""
-            dlog("Models loaded (ASR + VAD)")
+            dlog("Models loaded (Nemotron ASR language=\(transcriptionLanguage ?? "auto") + VAD)")
         } catch {
             errorMessage = "Failed: \(error.localizedDescription)"
             loadingStatus = ""
@@ -336,8 +356,13 @@ final class DictateViewModel: ObservableObject {
         partialCommitTracker.reset()
 
         do {
-            let session = try model.createSession()
-            let processor = ASRProcessor(session: session, vad: vad)
+            let backend = StreamingASRBackend.nemotron(
+                model: model,
+                language: transcriptionLanguage
+            )
+            let processor = try processQueue.sync {
+                try ASRProcessor(backend: backend, vad: vad)
+            }
             self.processor = processor
 
             recorder.start { [processor] chunk in
@@ -397,7 +422,7 @@ final class DictateViewModel: ObservableObject {
     }
 
     private func handlePartialTranscripts(
-        _ partials: [ParakeetStreamingASRModel.PartialTranscript]
+        _ partials: [StreamingTranscript]
     ) {
         for (index, partial) in partials.enumerated() {
             let hasNewerCallbackForSegment = partials.dropFirst(index + 1).contains {
@@ -411,7 +436,7 @@ final class DictateViewModel: ObservableObject {
     }
 
     private func handlePartialTranscript(
-        _ partial: ParakeetStreamingASRModel.PartialTranscript,
+        _ partial: StreamingTranscript,
         allowOrdinaryInsertion: Bool
     ) {
         let now = commitClock.now
@@ -423,7 +448,7 @@ final class DictateViewModel: ObservableObject {
         let ages = partialCommitTracker.stableTokenAges(at: now)
         dlog(
             "[\(logTimestamp())] PARTIAL segment=\(partial.segmentIndex) final=\(partial.isFinal) "
-                + "eou=\(partial.eouDetected) behavior=\(observation.callbackBehavior.rawValue) "
+                + "boundary=\(partial.boundaryReason?.rawValue ?? "none") behavior=\(observation.callbackBehavior.rawValue) "
                 + "alignment=\(observation.alignmentPoint) stable=[\(ages)] raw=\(String(reflecting: partial.text))"
         )
         if let divergence = observation.divergence {
@@ -458,7 +483,7 @@ final class DictateViewModel: ObservableObject {
             }
             partialText = ""
             if insertionSucceeded {
-                dlog("[\(logTimestamp())] PARTIAL EOU reset segment=\(partial.segmentIndex)")
+                dlog("[\(logTimestamp())] PARTIAL utterance-reset segment=\(partial.segmentIndex)")
                 partialCommitTracker.reset()
             }
         } else if !partial.text.isEmpty {
