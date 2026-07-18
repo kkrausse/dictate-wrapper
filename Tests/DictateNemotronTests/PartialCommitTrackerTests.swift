@@ -12,12 +12,12 @@ final class PartialCommitTrackerTests: XCTestCase {
         XCTAssertNil(tracker.observe(text, at: start).candidate)
         XCTAssertNil(tracker.observe(
             text,
-            at: start.advanced(by: .milliseconds(1_699))
+            at: start.advanced(by: PartialCommitTracker.stableDuration - .milliseconds(1))
         ).candidate)
 
         let candidate = tracker.observe(
             text,
-            at: start.advanced(by: .milliseconds(1_700))
+            at: start.advanced(by: PartialCommitTracker.stableDuration)
         ).candidate
         XCTAssertEqual(candidate?.normalizedTokens, ["one", "two", "three"])
         XCTAssertEqual(candidate?.renderedText, "one two three ")
@@ -40,7 +40,7 @@ final class PartialCommitTrackerTests: XCTestCase {
 
         let stableAgain = tracker.observe(
             "one two changed four five six",
-            at: start.advanced(by: .seconds(2.7))
+            at: start.advanced(by: .seconds(1) + PartialCommitTracker.stableDuration)
         )
         XCTAssertEqual(stableAgain.candidate?.normalizedTokens, ["one", "two", "changed"])
     }
@@ -68,7 +68,7 @@ final class PartialCommitTrackerTests: XCTestCase {
 
         let observation = tracker.observe(
             "hello world? four five six",
-            at: start.advanced(by: .seconds(1.7))
+            at: start.advanced(by: PartialCommitTracker.stableDuration)
         )
         XCTAssertEqual(observation.candidate?.normalizedTokens, ["hello", "world"])
         XCTAssertEqual(observation.candidate?.renderedText, "hello world? ")
@@ -80,7 +80,7 @@ final class PartialCommitTrackerTests: XCTestCase {
         _ = shortTracker.observe("a b c d", at: start)
         XCTAssertNil(shortTracker.observe(
             "a b c d",
-            at: start.advanced(by: .seconds(1.7))
+            at: start.advanced(by: PartialCommitTracker.stableDuration)
         ).candidate)
 
         var longTracker = PartialCommitTracker()
@@ -88,7 +88,7 @@ final class PartialCommitTrackerTests: XCTestCase {
         XCTAssertEqual(
             longTracker.observe(
                 "extraordinary b c d",
-                at: start.advanced(by: .seconds(1.7))
+                at: start.advanced(by: PartialCommitTracker.stableDuration)
             ).candidate?.normalizedTokens,
             ["extraordinary"]
         )
@@ -147,7 +147,7 @@ final class PartialCommitTrackerTests: XCTestCase {
         _ = tracker.observe(text, at: start)
         let partial = tracker.observe(
             text,
-            at: start.advanced(by: .seconds(1.7))
+            at: start.advanced(by: PartialCommitTracker.stableDuration)
         )
         tracker.didInsert(try XCTUnwrap(partial.candidate))
 
@@ -181,7 +181,7 @@ final class PartialCommitTrackerTests: XCTestCase {
         _ = tracker.observe(initial, at: start)
         let ordinary = tracker.observe(
             initial,
-            at: start.advanced(by: .seconds(1.7))
+            at: start.advanced(by: PartialCommitTracker.stableDuration)
         )
         tracker.didInsert(try! XCTUnwrap(ordinary.candidate))
 

@@ -26,6 +26,8 @@ private func logTimestamp() -> String {
 
 /// Owns the mutable streaming state used by the off-main-thread audio pipeline.
 final class ASRProcessor: @unchecked Sendable {
+    private static let savesDebugAudio = ProcessInfo.processInfo.environment["DICTATE_SAVE_DEBUG_AUDIO"] == "1"
+
     private let sessions: StreamingSessionManager
     private let vad: SileroVADModel
     private let lock = NSLock()
@@ -36,10 +38,14 @@ final class ASRProcessor: @unchecked Sendable {
     nonisolated(unsafe) var speechActive = false
     nonisolated(unsafe) var silenceCount = 0
     nonisolated(unsafe) var hasPendingUtterance = false
-    nonisolated(unsafe) var lastRms: Float = 0
 
     // 30 VAD chunks at 512 samples and 16 kHz is about 960 ms of silence.
     private let forceFinalizeSilentChunks = 30
+    // Batch ASR cost grows with the accumulated utterance. Bound each batch
+    // segment rather than trimming at guessed word/sample boundaries.
+    private let maximumBatchSegmentSamples = 20 * 16_000
+    private let partialBackpressureThresholdSamples = 16_000
+    private var sessionSampleCount = 0
 
     init(backend: StreamingASRBackend, vad: SileroVADModel) throws {
         sessions = try StreamingSessionManager(backend: backend)
@@ -69,12 +75,14 @@ final class ASRProcessor: @unchecked Sendable {
     }
 
     private func appendDebugAudio(_ samples: [Float]) {
+        guard Self.savesDebugAudio else { return }
         lock.lock()
         allAudio.pointee.append(contentsOf: samples)
         lock.unlock()
     }
 
     func saveDebugAudio() {
+        guard Self.savesDebugAudio else { return }
         lock.lock()
         let audio = allAudio.pointee
         lock.unlock()
@@ -139,8 +147,6 @@ final class ASRProcessor: @unchecked Sendable {
         lock.unlock()
         guard !chunk.isEmpty else { return ([], speechActive) }
 
-        let rms = sqrt(chunk.reduce(0) { $0 + $1 * $1 } / Float(chunk.count))
-
         // Carry leftovers across calls so Silero sees a continuous sequence of
         // its required 512-sample chunks.
         lock.lock()
@@ -165,10 +171,17 @@ final class ASRProcessor: @unchecked Sendable {
         vadLeftover.pointee = leftover
         lock.unlock()
 
-        lastRms = rms
         do {
             appendDebugAudio(chunk)
-            var partials = try sessions.pushAudio(chunk)
+            let emitPartials = chunk.count < partialBackpressureThresholdSamples
+            if !emitPartials {
+                dlog(
+                    "asr: partial skipped for backpressure backlog=\(chunk.count) "
+                        + "(\(String(format: "%.2f", Double(chunk.count) / 16_000)))s"
+                )
+            }
+            var partials = try sessions.pushAudio(chunk, emitPartials: emitPartials)
+            sessionSampleCount += chunk.count
 
             // A future backend may provide native final callbacks.
             if partials.contains(where: { $0.isFinal }) {
@@ -188,11 +201,23 @@ final class ASRProcessor: @unchecked Sendable {
                 partials.append(contentsOf: boundary.transcripts)
                 logBoundaryResult(boundary, reason: .vadFinalization)
                 hasPendingUtterance = false
+                sessionSampleCount = 0
+            } else if hasPendingUtterance
+                && sessionSampleCount >= maximumBatchSegmentSamples
+            {
+                let boundary = sessions.finalize(
+                    reason: .maximumDurationFinalization,
+                    recreateSession: true
+                )
+                partials.append(contentsOf: boundary.transcripts)
+                logBoundaryResult(boundary, reason: .maximumDurationFinalization)
+                hasPendingUtterance = false
+                sessionSampleCount = 0
             }
 
             logRawPartials(partials, source: "stream")
 
-            dlog("asr: rms=\(String(format: "%.4f", rms)) vad=\(speechActive) partials=\(partials.count)")
+            dlog("asr: vad=\(speechActive) partials=\(partials.count)")
             if !partials.isEmpty {
                 dlog("ASR: \(partials.count) partials - '\(partials.map(\.text).joined(separator: ", "))'")
             }

@@ -19,7 +19,9 @@ The current transcription backend is Speech Swift's Qwen3-ASR 0.6B MLX model wit
 
 ## Recognition behavior
 
-Qwen3-ASR transcribes the accumulated utterance rather than maintaining Nemotron-style native streaming state. The app refreshes its partial hypothesis after each additional second of audio, then retranscribes once at a VAD or explicit-stop boundary to produce the final result. It retains the existing stable-token commit policy, which waits 1.7 seconds and holds back the newest three words before pasting partial text.
+Qwen3-ASR transcribes the accumulated utterance rather than maintaining Nemotron-style native streaming state. The reusable batch-ASR adapter refreshes its partial hypothesis every two seconds initially and every four seconds after ten seconds of continuous audio. It finalizes at a VAD or explicit-stop boundary and caps uninterrupted batch segments at 20 seconds, avoiding unbounded cumulative retranscription without guessing word-to-audio boundaries. Its stable-token commit policy currently waits 2.1 seconds and holds back the newest three words before pasting partial text.
+
+Set `DICTATE_SAVE_DEBUG_AUDIO=1` in the app environment to retain the complete session and write `/tmp/dictate-debug.wav` when recording stops. Debug audio is disabled by default to avoid continuously growing memory use during dictation.
 
 Silero VAD decides when about 960 ms of sustained silence should finalize and reset the utterance. Releasing the push-to-talk key also explicitly finalizes any pending audio.
 

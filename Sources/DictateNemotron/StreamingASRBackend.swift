@@ -4,6 +4,7 @@ import Qwen3ASR
 enum BoundaryReason: String, Sendable {
     case modelOutput = "model-output"
     case vadFinalization = "vad-finalization"
+    case maximumDurationFinalization = "maximum-duration-finalization"
     case explicitStopFinalization = "explicit-stop-finalization"
 }
 
@@ -15,8 +16,14 @@ struct StreamingTranscript: Sendable {
 }
 
 protocol StreamingASRSession: AnyObject {
-    func pushAudio(_ samples: [Float]) throws -> [StreamingTranscript]
+    func pushAudio(_ samples: [Float], emitPartials: Bool) throws -> [StreamingTranscript]
     func finalize() throws -> [StreamingTranscript]
+}
+
+extension StreamingASRSession {
+    func pushAudio(_ samples: [Float]) throws -> [StreamingTranscript] {
+        try pushAudio(samples, emitPartials: true)
+    }
 }
 
 struct StreamingASRBackend {
@@ -41,7 +48,14 @@ struct StreamingASRBackend {
         return StreamingASRBackend(
             name: "QWEN3-ASR"
         ) {
-            Qwen3SessionAdapter(model: model, language: language)
+            BatchRetranscriptionSession { audio in
+                model.transcribe(
+                    audio: audio,
+                    sampleRate: 16_000,
+                    language: language,
+                    maxTokens: 448
+                )
+            }
         }
     }
 }
@@ -71,9 +85,12 @@ final class StreamingSessionManager {
         session = try backend.makeSession()
     }
 
-    func pushAudio(_ samples: [Float]) throws -> [StreamingTranscript] {
+    func pushAudio(
+        _ samples: [Float],
+        emitPartials: Bool = true
+    ) throws -> [StreamingTranscript] {
         guard let session else { throw StreamingSessionManagerError.noActiveSession }
-        let transcripts = try session.pushAudio(samples)
+        let transcripts = try session.pushAudio(samples, emitPartials: emitPartials)
         pushedSamples += samples.count
         if let text = transcripts.last?.text {
             latestText = text
@@ -172,25 +189,43 @@ enum StreamingSessionManagerError: Error {
     case noActiveSession
 }
 
-private final class Qwen3SessionAdapter: StreamingASRSession {
-    private let model: Qwen3ASRModel
-    private let language: String?
+/// Adapts cumulative, batch-only ASR models to the app's streaming session
+/// surface. Native streaming models should implement `StreamingASRSession`
+/// directly so their encoder caches and decoder state remain intact.
+final class BatchRetranscriptionSession: StreamingASRSession {
+    private static let sampleRate = 16_000
+    private static let initialPartialIntervalSamples = sampleRate * 2
+    private static let longUtterancePartialIntervalSamples = sampleRate * 4
+    private static let longUtteranceThresholdSamples = sampleRate * 10
+
+    private let transcribeBatch: ([Float]) -> String
     private var audio: [Float] = []
-    private var nextPartialSampleCount = 16_000
+    private var nextPartialSampleCount = initialPartialIntervalSamples
     private var latestText = ""
 
-    init(model: Qwen3ASRModel, language: String?) {
-        self.model = model
-        self.language = language
+    init(transcribeBatch: @escaping ([Float]) -> String) {
+        self.transcribeBatch = transcribeBatch
     }
 
-    func pushAudio(_ samples: [Float]) throws -> [StreamingTranscript] {
+    func pushAudio(
+        _ samples: [Float],
+        emitPartials: Bool
+    ) throws -> [StreamingTranscript] {
         audio.append(contentsOf: samples)
         guard audio.count >= nextPartialSampleCount else { return [] }
-        nextPartialSampleCount = audio.count + 16_000
+        let interval = partialInterval(for: audio.count)
+        nextPartialSampleCount = audio.count + interval
+        guard emitPartials else { return [] }
+
         latestText = transcribe()
         guard !latestText.isEmpty else { return [] }
         return [transcript(text: latestText, isFinal: false)]
+    }
+
+    private func partialInterval(for sampleCount: Int) -> Int {
+        sampleCount >= Self.longUtteranceThresholdSamples
+            ? Self.longUtterancePartialIntervalSamples
+            : Self.initialPartialIntervalSamples
     }
 
     func finalize() throws -> [StreamingTranscript] {
@@ -202,12 +237,7 @@ private final class Qwen3SessionAdapter: StreamingASRSession {
     }
 
     private func transcribe() -> String {
-        model.transcribe(
-            audio: audio,
-            sampleRate: 16_000,
-            language: language,
-            maxTokens: 448
-        ).trimmingCharacters(in: .whitespacesAndNewlines)
+        transcribeBatch(audio).trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func transcript(text: String, isFinal: Bool) -> StreamingTranscript {

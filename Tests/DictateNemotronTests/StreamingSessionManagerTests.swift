@@ -2,6 +2,44 @@ import XCTest
 @testable import DictateNemotron
 
 final class StreamingSessionManagerTests: XCTestCase {
+    func testBatchAdapterBacksOffPartialCadenceForLongUtterances() throws {
+        var transcribedSampleCounts: [Int] = []
+        let session = BatchRetranscriptionSession { audio in
+            transcribedSampleCounts.append(audio.count)
+            return "words"
+        }
+
+        for expectedSeconds in stride(from: 2, through: 10, by: 2) {
+            let partials = try session.pushAudio([Float](repeating: 0, count: 32_000))
+            XCTAssertEqual(partials.count, 1)
+            XCTAssertEqual(transcribedSampleCounts.last, expectedSeconds * 16_000)
+        }
+
+        XCTAssertTrue(try session.pushAudio([Float](repeating: 0, count: 63_999)).isEmpty)
+        XCTAssertEqual(try session.pushAudio([0]).count, 1)
+        XCTAssertEqual(transcribedSampleCounts.last, 14 * 16_000)
+    }
+
+    func testBatchAdapterSkipsStalePartialAndAdvancesCadence() throws {
+        var transcriptionCount = 0
+        let session = BatchRetranscriptionSession { _ in
+            transcriptionCount += 1
+            return "words"
+        }
+
+        XCTAssertTrue(try session.pushAudio(
+            [Float](repeating: 0, count: 32_000),
+            emitPartials: false
+        ).isEmpty)
+        XCTAssertEqual(transcriptionCount, 0)
+        XCTAssertTrue(try session.pushAudio(
+            [Float](repeating: 0, count: 31_999),
+            emitPartials: true
+        ).isEmpty)
+        XCTAssertEqual(try session.pushAudio([0], emitPartials: true).count, 1)
+        XCTAssertEqual(transcriptionCount, 1)
+    }
+
     func testVADBoundaryFinalizesOnceAndRecreatesSession() throws {
         let first = FakeStreamingSession(finalText: "first")
         let second = FakeStreamingSession(finalText: "second")
@@ -81,7 +119,10 @@ private final class FakeStreamingSession: StreamingASRSession {
         self.finalText = finalText
     }
 
-    func pushAudio(_ samples: [Float]) throws -> [StreamingTranscript] {
+    func pushAudio(
+        _ samples: [Float],
+        emitPartials: Bool
+    ) throws -> [StreamingTranscript] {
         pushedAudio.append(samples)
         return []
     }
