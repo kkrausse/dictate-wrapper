@@ -21,13 +21,28 @@ protocol StreamingASRSession: AnyObject {
 
 struct StreamingASRBackend {
     let name: String
+    let explicitStopPostRollSamples: Int
     let makeSession: () throws -> any StreamingASRSession
+
+    init(
+        name: String,
+        explicitStopPostRollSamples: Int = 0,
+        makeSession: @escaping () throws -> any StreamingASRSession
+    ) {
+        self.name = name
+        self.explicitStopPostRollSamples = explicitStopPostRollSamples
+        self.makeSession = makeSession
+    }
 
     static func nemotron(
         model: NemotronStreamingASRModel,
         language: String?
     ) -> StreamingASRBackend {
-        StreamingASRBackend(name: "NEMOTRON") {
+        let samplesPerChunk = model.config.streaming.melFrames * model.config.hopLength
+        return StreamingASRBackend(
+            name: "NEMOTRON",
+            explicitStopPostRollSamples: samplesPerChunk
+        ) {
             let session = try model.createSession(language: language)
             return NemotronSessionAdapter(session: session)
         }
@@ -46,18 +61,27 @@ final class StreamingSessionManager {
     let backendName: String
 
     private let makeSession: () throws -> any StreamingASRSession
+    private let explicitStopPostRollSamples: Int
     private var session: (any StreamingASRSession)?
+    private var pushedSamples = 0
+    private var latestText = ""
     private(set) var segmentIndex = 0
 
     init(backend: StreamingASRBackend) throws {
         backendName = backend.name
         makeSession = backend.makeSession
+        explicitStopPostRollSamples = backend.explicitStopPostRollSamples
         session = try backend.makeSession()
     }
 
     func pushAudio(_ samples: [Float]) throws -> [StreamingTranscript] {
         guard let session else { throw StreamingSessionManagerError.noActiveSession }
-        return try session.pushAudio(samples).map {
+        let transcripts = try session.pushAudio(samples)
+        pushedSamples += samples.count
+        if let text = transcripts.last?.text {
+            latestText = text
+        }
+        return transcripts.map {
             transcript($0, segmentIndex: segmentIndex, boundaryReason: $0.boundaryReason)
         }
     }
@@ -74,7 +98,40 @@ final class StreamingSessionManager {
         let finalizedSegmentIndex = segmentIndex
         var result = StreamingSessionBoundaryResult(segmentIndex: finalizedSegmentIndex)
         do {
-            result.transcripts = try finalizedSession.finalize().map {
+            var postRollStartText: String?
+            var postRollCallbackCount = 0
+            var residualSamples = 0
+
+            // Nemotron can defer trailing emissions until another native
+            // chunk; VAD boundaries already include ample real silence.
+            if reason == .explicitStopFinalization,
+               explicitStopPostRollSamples > 0
+            {
+                residualSamples = pushedSamples % explicitStopPostRollSamples
+                postRollStartText = latestText
+                let postRoll = try finalizedSession.pushAudio(
+                    [Float](repeating: 0, count: explicitStopPostRollSamples)
+                )
+                postRollCallbackCount = postRoll.count
+                if let text = postRoll.last?.text {
+                    latestText = text
+                }
+            }
+
+            let finalizedTranscripts = try finalizedSession.finalize()
+            if let text = finalizedTranscripts.last?.text {
+                latestText = text
+            }
+            if let postRollStartText {
+                dlog(
+                    "\(backendName) explicit-stop post-roll: real=\(pushedSamples) "
+                        + "residual=\(residualSamples)/\(explicitStopPostRollSamples) "
+                        + "silence=\(explicitStopPostRollSamples) callbacks=\(postRollCallbackCount) "
+                        + "final-hypothesis-changed=\(latestText != postRollStartText)"
+                )
+            }
+
+            result.transcripts = finalizedTranscripts.map {
                 transcript(
                     $0,
                     segmentIndex: finalizedSegmentIndex,
@@ -88,6 +145,8 @@ final class StreamingSessionManager {
 
         if recreateSession {
             segmentIndex += 1
+            pushedSamples = 0
+            latestText = ""
             do {
                 session = try makeSession()
             } catch {

@@ -204,6 +204,10 @@ final class ASRProcessor: @unchecked Sendable {
     }
 
     func finalize() -> [StreamingTranscript] {
+        dlog(
+            "[\(logTimestamp())] \(sessions.backendName) explicit-finalize begin "
+                + "buffered=\(bufferedCount) pending-callbacks=\(pendingPartialCount)"
+        )
         let (bufferedPartials, _) = processBuffered()
         let boundary = sessions.finalize(
             reason: .explicitStopFinalization,
@@ -212,6 +216,12 @@ final class ASRProcessor: @unchecked Sendable {
         logBoundaryResult(boundary, reason: .explicitStopFinalization)
         logRawPartials(boundary.transcripts, source: "explicit-finalize")
         return bufferedPartials + boundary.transcripts
+    }
+
+    private var pendingPartialCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return pendingPartials.pointee.count
     }
 
     private func logRawPartials(
@@ -264,6 +274,7 @@ final class DictateViewModel: ObservableObject {
     private let processQueue = DispatchQueue(label: "dictate.asr", qos: .userInteractive)
     private var processTimer: DispatchSourceTimer?
     private var partialCommitTracker = PartialCommitTracker()
+    private var isStopping = false
     // Keep language policy at the app/backend boundary so it can become a
     // preference without changing the processor lifecycle.
     private let transcriptionLanguage: String? = "en-US"
@@ -342,6 +353,10 @@ final class DictateViewModel: ObservableObject {
 
     func startRecording() {
         dlog("startRecording called, model=\(model != nil), vad=\(vad != nil)")
+        guard !isStopping else {
+            dlog("Recorder is still draining the previous stop")
+            return
+        }
         guard let model, let vad else {
             dlog("Models are not ready")
             return
@@ -399,13 +414,22 @@ final class DictateViewModel: ObservableObject {
     }
 
     func stopRecording() {
+        guard !isStopping else { return }
+        isStopping = true
         processTimer?.cancel()
         processTimer = nil
-        recorder.stop()
         isRecording = false
         isSpeechActive = false
 
-        if let processor {
+        guard let processor else {
+            recorder.stop { [weak self] in
+                self?.isStopping = false
+            }
+            return
+        }
+
+        recorder.stop { [weak self, processor] in
+            guard let self else { return }
             // Wait behind any in-flight timer tick before draining and
             // finalizing the session so no captured audio is lost.
             let finalPartials = processQueue.sync {
@@ -413,12 +437,14 @@ final class DictateViewModel: ObservableObject {
                 processor.saveDebugAudio()
                 return partials
             }
-            self.processor = nil
+            if self.processor === processor {
+                self.processor = nil
+            }
             handlePartialTranscripts(finalPartials)
+            forceFinalizeCurrentUtterance(reason: "explicit-stop")
+            partialText = ""
+            isStopping = false
         }
-        forceFinalizeCurrentUtterance(reason: "explicit-stop")
-        processor = nil
-        partialText = ""
     }
 
     private func handlePartialTranscripts(
