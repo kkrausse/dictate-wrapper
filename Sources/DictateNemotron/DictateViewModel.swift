@@ -1,6 +1,6 @@
 import AppKit
 import Foundation
-import NemotronStreamingASR
+import Qwen3ASR
 import SpeechVAD
 
 let logPath = "/tmp/dictate.log"
@@ -175,7 +175,7 @@ final class ASRProcessor: @unchecked Sendable {
                 hasPendingUtterance = false
             }
 
-            // Nemotron has no EOU head, so sustained VAD silence is the
+            // Qwen3-ASR has no EOU head, so sustained VAD silence is the
             // automatic utterance boundary.
             if hasPendingUtterance
                 && !speechActive
@@ -257,20 +257,7 @@ final class ASRProcessor: @unchecked Sendable {
 
 @MainActor
 final class DictateViewModel: ObservableObject {
-    /// Recognition latency is part of the compiled CoreML encoder bundle.
-    /// Add another case only when a Speech Swift-compatible bundle for that
-    /// native streaming geometry is available; changing caller chunk sizes
-    /// does not retune the encoder's lookahead.
-    private enum RecognitionMode {
-        case balanced320ms
-
-        var modelID: String {
-            switch self {
-            case .balanced320ms:
-                NemotronStreamingASRModel.defaultModelId
-            }
-        }
-    }
+    private static let qwenModelID = "aufklarer/Qwen3-ASR-0.6B-MLX-4bit"
 
     @Published var sentences: [String] = []
     @Published var partialText = ""
@@ -280,7 +267,7 @@ final class DictateViewModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var isSpeechActive = false
 
-    private var model: NemotronStreamingASRModel?
+    private var model: Qwen3ASRModel?
     private var vad: SileroVADModel?
     private var processor: ASRProcessor?
     private var globalHotKey: GlobalHotKey?
@@ -295,8 +282,7 @@ final class DictateViewModel: ObservableObject {
     private let hotKeyActivationMode: GlobalHotKey.ActivationMode = .pushToTalk
     // Keep language policy at the app/backend boundary so it can become a
     // preference without changing the processor lifecycle.
-    private let transcriptionLanguage: String? = "en-US"
-    private let recognitionMode: RecognitionMode = .balanced320ms
+    private let transcriptionLanguage: String? = "en"
 
     var modelLoaded: Bool { model != nil && vad != nil }
 
@@ -326,11 +312,11 @@ final class DictateViewModel: ObservableObject {
         guard model == nil else { return }
         isLoading = true
         loadingStatus = "Downloading ASR model..."
-        let recognitionModelID = recognitionMode.modelID
+        let recognitionModelID = Self.qwenModelID
 
         do {
             let loaded = try await Task.detached {
-                let loaded = try await NemotronStreamingASRModel.fromPretrained(
+                try await Qwen3ASRModel.fromPretrained(
                     modelId: recognitionModelID
                 ) { [weak self] progress, status in
                     DispatchQueue.main.async {
@@ -340,11 +326,6 @@ final class DictateViewModel: ObservableObject {
                             : "\(status) (\(percent)%)"
                     }
                 }
-                DispatchQueue.main.async { [weak self] in
-                    self?.loadingStatus = "Warming up..."
-                }
-                try loaded.warmUp()
-                return loaded
             }.value
             model = loaded
 
@@ -354,7 +335,7 @@ final class DictateViewModel: ObservableObject {
             }.value
             loadingStatus = ""
             dlog(
-                "Models loaded (Nemotron ASR chunk=\(loaded.config.streaming.chunkMs)ms "
+                "Models loaded (Qwen3-ASR 0.6B MLX "
                     + "language=\(transcriptionLanguage ?? "auto") + VAD)"
             )
         } catch {
@@ -406,7 +387,7 @@ final class DictateViewModel: ObservableObject {
         clipboardPreserver.beginSession()
 
         do {
-            let backend = StreamingASRBackend.nemotron(
+            let backend = StreamingASRBackend.qwen3(
                 model: model,
                 language: transcriptionLanguage
             )

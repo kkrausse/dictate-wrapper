@@ -1,5 +1,5 @@
 import Foundation
-import NemotronStreamingASR
+import Qwen3ASR
 
 enum BoundaryReason: String, Sendable {
     case modelOutput = "model-output"
@@ -34,17 +34,14 @@ struct StreamingASRBackend {
         self.makeSession = makeSession
     }
 
-    static func nemotron(
-        model: NemotronStreamingASRModel,
+    static func qwen3(
+        model: Qwen3ASRModel,
         language: String?
     ) -> StreamingASRBackend {
-        let samplesPerChunk = model.config.streaming.melFrames * model.config.hopLength
         return StreamingASRBackend(
-            name: "NEMOTRON",
-            explicitStopPostRollSamples: samplesPerChunk
+            name: "QWEN3-ASR"
         ) {
-            let session = try model.createSession(language: language)
-            return NemotronSessionAdapter(session: session)
+            Qwen3SessionAdapter(model: model, language: language)
         }
     }
 }
@@ -102,8 +99,8 @@ final class StreamingSessionManager {
             var postRollCallbackCount = 0
             var residualSamples = 0
 
-            // Nemotron can defer trailing emissions until another native
-            // chunk; VAD boundaries already include ample real silence.
+            // Some streaming backends defer trailing emissions until another
+            // native chunk; VAD boundaries already include ample real silence.
             if reason == .explicitStopFinalization,
                explicitStopPostRollSamples > 0
             {
@@ -175,28 +172,49 @@ enum StreamingSessionManagerError: Error {
     case noActiveSession
 }
 
-private final class NemotronSessionAdapter: StreamingASRSession {
-    private let session: NemotronStreamingASR.StreamingSession
+private final class Qwen3SessionAdapter: StreamingASRSession {
+    private let model: Qwen3ASRModel
+    private let language: String?
+    private var audio: [Float] = []
+    private var nextPartialSampleCount = 16_000
+    private var latestText = ""
 
-    init(session: NemotronStreamingASR.StreamingSession) {
-        self.session = session
+    init(model: Qwen3ASRModel, language: String?) {
+        self.model = model
+        self.language = language
     }
 
     func pushAudio(_ samples: [Float]) throws -> [StreamingTranscript] {
-        try session.pushAudio(samples).map(Self.transcript)
+        audio.append(contentsOf: samples)
+        guard audio.count >= nextPartialSampleCount else { return [] }
+        nextPartialSampleCount = audio.count + 16_000
+        latestText = transcribe()
+        guard !latestText.isEmpty else { return [] }
+        return [transcript(text: latestText, isFinal: false)]
     }
 
     func finalize() throws -> [StreamingTranscript] {
-        try session.finalize().map(Self.transcript)
+        guard !audio.isEmpty else { return [] }
+        let finalText = transcribe()
+        audio.removeAll(keepingCapacity: false)
+        guard !finalText.isEmpty else { return [] }
+        return [transcript(text: finalText, isFinal: true)]
     }
 
-    private static func transcript(
-        _ transcript: NemotronStreamingASRModel.PartialTranscript
-    ) -> StreamingTranscript {
+    private func transcribe() -> String {
+        model.transcribe(
+            audio: audio,
+            sampleRate: 16_000,
+            language: language,
+            maxTokens: 448
+        ).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private func transcript(text: String, isFinal: Bool) -> StreamingTranscript {
         StreamingTranscript(
-            text: transcript.text,
-            isFinal: transcript.isFinal,
-            segmentIndex: transcript.segmentIndex,
+            text: text,
+            isFinal: isFinal,
+            segmentIndex: 0,
             boundaryReason: .modelOutput
         )
     }

@@ -11,7 +11,7 @@ let package = Package(
         .executableTarget(
             name: "DictateNemotron",
             dependencies: [
-                .product(name: "NemotronStreamingASR", package: "speech-swift"),
+                .product(name: "Qwen3ASR", package: "speech-swift"),
                 .product(name: "SpeechVAD", package: "speech-swift"),
             ]
         ),
