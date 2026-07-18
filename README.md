@@ -8,7 +8,7 @@ The project is intentionally app-focused. [Speech Swift](https://github.com/soni
 
 The development app currently:
 
-- Registers `Cmd+Shift+D` as a global start/stop shortcut.
+- Uses Right Option as a global push-to-talk shortcut.
 - Captures microphone audio and transcribes it locally.
 - Shows partial and finalized text in a menu-bar popover.
 - Uses voice activity detection to finalize utterances promptly.
@@ -77,9 +77,9 @@ The app appears as a microphone icon in the macOS menu bar rather than in the Do
 
 1. Launch the app and wait for the ASR and VAD models to load.
 2. Put the cursor in the application where dictated text should be inserted.
-3. Press `Cmd+Shift+D` to start recording.
+3. Press and hold the right Option key to record.
 4. Speak normally. Finalized utterances are pasted into the focused application.
-5. Press `Cmd+Shift+D` again to flush pending speech and stop recording.
+5. Release right Option to flush pending speech and stop recording.
 
 On first use, macOS asks for microphone and Accessibility access. Accessibility access is required to synthesize `Cmd+V` in the frontmost application. Development builds may need to be re-authorized after the executable changes. Permissions can be managed in **System Settings > Privacy & Security**.
 

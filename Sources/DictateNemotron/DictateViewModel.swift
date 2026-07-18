@@ -275,6 +275,8 @@ final class DictateViewModel: ObservableObject {
     private var processTimer: DispatchSourceTimer?
     private var partialCommitTracker = PartialCommitTracker()
     private var isStopping = false
+    // Change this to `.toggle` to restore press-on/press-off hotkey behavior.
+    private let hotKeyActivationMode: GlobalHotKey.ActivationMode = .pushToTalk
     // Keep language policy at the app/backend boundary so it can become a
     // preference without changing the processor lifecycle.
     private let transcriptionLanguage: String? = "en-US"
@@ -295,14 +297,10 @@ final class DictateViewModel: ObservableObject {
     }
 
     init() {
-        do {
-            globalHotKey = try GlobalHotKey { [weak self] in
-                Task { @MainActor [weak self] in
-                    self?.toggleRecording()
-                }
+        globalHotKey = GlobalHotKey { [weak self] phase in
+            Task { @MainActor [weak self] in
+                self?.handleHotKey(phase)
             }
-        } catch {
-            errorMessage = error.localizedDescription
         }
         Task { await loadModels() }
     }
@@ -351,6 +349,19 @@ final class DictateViewModel: ObservableObject {
         }
     }
 
+    private func handleHotKey(_ phase: GlobalHotKey.Phase) {
+        switch (hotKeyActivationMode, phase) {
+        case (.pushToTalk, .pressed):
+            if !isRecording { startRecording() }
+        case (.pushToTalk, .released):
+            if isRecording { stopRecording() }
+        case (.toggle, .pressed):
+            toggleRecording()
+        case (.toggle, .released):
+            break
+        }
+    }
+
     func startRecording() {
         dlog("startRecording called, model=\(model != nil), vad=\(vad != nil)")
         guard !isStopping else {
@@ -362,7 +373,7 @@ final class DictateViewModel: ObservableObject {
             return
         }
         guard requestAccessibilityPermission() else {
-            errorMessage = "Enable DictateNemotron in System Settings > Privacy & Security > Accessibility, then press Cmd+Shift+D again."
+            errorMessage = "Enable DictateNemotron in System Settings > Privacy & Security > Accessibility, then hold Right Option again."
             return
         }
         errorMessage = nil
