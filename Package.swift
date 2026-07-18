@@ -15,5 +15,9 @@ let package = Package(
                 .product(name: "SpeechVAD", package: "speech-swift"),
             ]
         ),
+        .testTarget(
+            name: "DictateNemotronTests",
+            dependencies: ["DictateNemotron"]
+        ),
     ]
 )

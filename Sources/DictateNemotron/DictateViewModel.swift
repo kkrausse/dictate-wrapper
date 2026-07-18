@@ -20,6 +20,10 @@ func dlog(_ message: String) {
     }
 }
 
+private func logTimestamp() -> String {
+    String(format: "%.3f", Date().timeIntervalSince1970)
+}
+
 /// Owns the mutable streaming state used by the off-main-thread audio pipeline.
 final class ASRProcessor: @unchecked Sendable {
     let session: StreamingSession
@@ -185,6 +189,8 @@ final class ASRProcessor: @unchecked Sendable {
                 hasPendingUtterance = false
             }
 
+            logRawPartials(partials, source: "stream")
+
             dlog("asr: rms=\(String(format: "%.4f", rms)) vad=\(speechActive) partials=\(partials.count)")
             if !partials.isEmpty {
                 dlog("ASR: \(partials.count) partials - '\(partials.map(\.text).joined(separator: ", "))'")
@@ -202,9 +208,25 @@ final class ASRProcessor: @unchecked Sendable {
             // Advance delayed encoder emissions so stopping does not truncate
             // the final words instead of waiting for real microphone post-roll.
             let flushed = try session.pushAudio([Float](repeating: 0, count: 8_000))
-            return bufferedPartials + flushed + (try session.finalize())
+            let finalized = try session.finalize()
+            logRawPartials(flushed, source: "stop-flush")
+            logRawPartials(finalized, source: "explicit-finalize")
+            return bufferedPartials + flushed + finalized
         } catch {
+            dlog("[\(logTimestamp())] PARAKEET explicit-finalize error=\(String(reflecting: String(describing: error)))")
             return bufferedPartials
+        }
+    }
+
+    private func logRawPartials(
+        _ partials: [ParakeetStreamingASRModel.PartialTranscript],
+        source: String
+    ) {
+        for partial in partials {
+            dlog(
+                "[\(logTimestamp())] PARAKEET raw source=\(source) segment=\(partial.segmentIndex) "
+                    + "final=\(partial.isFinal) eou=\(partial.eouDetected) text=\(String(reflecting: partial.text))"
+            )
         }
     }
 }
@@ -224,8 +246,10 @@ final class DictateViewModel: ObservableObject {
     private var processor: ASRProcessor?
     private var globalHotKey: GlobalHotKey?
     private let recorder = StreamingRecorder()
+    private let commitClock = ContinuousClock()
     private let processQueue = DispatchQueue(label: "dictate.asr", qos: .userInteractive)
     private var processTimer: DispatchSourceTimer?
+    private var partialCommitTracker = PartialCommitTracker()
 
     var modelLoaded: Bool { model != nil && vad != nil }
 
@@ -309,6 +333,7 @@ final class DictateViewModel: ObservableObject {
         errorMessage = nil
         partialText = ""
         sentences.removeAll()
+        partialCommitTracker.reset()
 
         do {
             let session = try model.createSession()
@@ -335,15 +360,7 @@ final class DictateViewModel: ObservableObject {
                               self.processor === processor else { return }
                         let partials = processor.takePendingPartials()
                         self.isSpeechActive = speaking
-                        for partial in partials {
-                            if partial.isFinal && !partial.text.isEmpty {
-                                self.sentences.append(partial.text)
-                                self.partialText = ""
-                                self.pasteFinalizedText(partial.text)
-                            } else if !partial.text.isEmpty {
-                                self.partialText = partial.text
-                            }
-                        }
+                        self.handlePartialTranscripts(partials)
                     }
                 }
             }
@@ -372,27 +389,135 @@ final class DictateViewModel: ObservableObject {
                 return partials
             }
             self.processor = nil
-            for partial in finalPartials where partial.isFinal && !partial.text.isEmpty {
-                sentences.append(partial.text)
-                pasteFinalizedText(partial.text)
-            }
+            handlePartialTranscripts(finalPartials)
         }
+        forceFinalizeCurrentUtterance(reason: "explicit-stop")
         processor = nil
         partialText = ""
     }
 
-    private func pasteFinalizedText(_ text: String) {
-        NSPasteboard.general.clearContents()
-        NSPasteboard.general.setString(text + " ", forType: .string)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            let source = CGEventSource(stateID: .hidSystemState)
-            let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true)
-            keyDown?.flags = .maskCommand
-            let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false)
-            keyUp?.flags = .maskCommand
-            keyDown?.post(tap: .cghidEventTap)
-            keyUp?.post(tap: .cghidEventTap)
+    private func handlePartialTranscripts(
+        _ partials: [ParakeetStreamingASRModel.PartialTranscript]
+    ) {
+        for (index, partial) in partials.enumerated() {
+            let hasNewerCallbackForSegment = partials.dropFirst(index + 1).contains {
+                $0.segmentIndex == partial.segmentIndex
+            }
+            handlePartialTranscript(
+                partial,
+                allowOrdinaryInsertion: !hasNewerCallbackForSegment
+            )
         }
+    }
+
+    private func handlePartialTranscript(
+        _ partial: ParakeetStreamingASRModel.PartialTranscript,
+        allowOrdinaryInsertion: Bool
+    ) {
+        let now = commitClock.now
+        let observation = partialCommitTracker.observe(
+            partial.text,
+            at: now,
+            forceFinalization: partial.isFinal
+        )
+        let ages = partialCommitTracker.stableTokenAges(at: now)
+        dlog(
+            "[\(logTimestamp())] PARTIAL segment=\(partial.segmentIndex) final=\(partial.isFinal) "
+                + "eou=\(partial.eouDetected) behavior=\(observation.callbackBehavior.rawValue) "
+                + "alignment=\(observation.alignmentPoint) stable=[\(ages)] raw=\(String(reflecting: partial.text))"
+        )
+        if let divergence = observation.divergence {
+            dlog("[\(logTimestamp())] PARTIAL committed-prefix-divergence \(divergence)")
+        }
+
+        var insertionSucceeded = true
+        if let candidate = observation.candidate,
+           partial.isFinal || allowOrdinaryInsertion
+        {
+            insertionSucceeded = insertCommittedText(
+                candidate.renderedText,
+                appendTrailingSpace: partial.isFinal
+            )
+            if insertionSucceeded {
+                partialCommitTracker.didInsert(candidate)
+                dlog(
+                    "[\(logTimestamp())] PARTIAL committed delta=\(String(reflecting: candidate.renderedText)) "
+                        + "words=\(candidate.tokenCount) final=\(partial.isFinal)"
+                )
+            } else {
+                dlog("[\(logTimestamp())] PARTIAL insertion-failed delta=\(String(reflecting: candidate.renderedText))")
+                errorMessage = "Could not insert dictated text into the active application."
+            }
+        } else if observation.candidate != nil {
+            dlog("[\(logTimestamp())] PARTIAL deferred eligible delta to newer segment callback")
+        }
+
+        if partial.isFinal {
+            if !partial.text.isEmpty {
+                sentences.append(partial.text)
+            }
+            partialText = ""
+            if insertionSucceeded {
+                dlog("[\(logTimestamp())] PARTIAL EOU reset segment=\(partial.segmentIndex)")
+                partialCommitTracker.reset()
+            }
+        } else if !partial.text.isEmpty {
+            partialText = partial.text
+        }
+    }
+
+    private func forceFinalizeCurrentUtterance(reason: String) {
+        guard !partialCommitTracker.state.latestPartial.isEmpty else {
+            partialCommitTracker.reset()
+            return
+        }
+
+        let now = commitClock.now
+        let observation = partialCommitTracker.observe(
+            partialCommitTracker.state.latestPartial,
+            at: now,
+            forceFinalization: true
+        )
+        guard let candidate = observation.candidate else {
+            dlog("[\(logTimestamp())] PARTIAL force-finalize reason=\(reason) no-uncommitted-text")
+            partialCommitTracker.reset()
+            return
+        }
+
+        if insertCommittedText(candidate.renderedText, appendTrailingSpace: true) {
+            partialCommitTracker.didInsert(candidate)
+            dlog(
+                "[\(logTimestamp())] PARTIAL force-finalize reason=\(reason) "
+                    + "alignment=\(observation.alignmentPoint) delta=\(String(reflecting: candidate.renderedText))"
+            )
+            partialCommitTracker.reset()
+        } else {
+            dlog("[\(logTimestamp())] PARTIAL force-finalize insertion-failed reason=\(reason)")
+            errorMessage = "Could not insert dictated text into the active application."
+        }
+    }
+
+    private func insertCommittedText(_ text: String, appendTrailingSpace: Bool) -> Bool {
+        guard !text.isEmpty else { return true }
+        let payload: String
+        if appendTrailingSpace, text.last.map({ !$0.isWhitespace }) == true {
+            payload = text + " "
+        } else {
+            payload = text
+        }
+
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false)
+        else { return false }
+
+        NSPasteboard.general.clearContents()
+        guard NSPasteboard.general.setString(payload, forType: .string) else { return false }
+        keyDown.flags = .maskCommand
+        keyUp.flags = .maskCommand
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+        return true
     }
 
     private func requestAccessibilityPermission() -> Bool {
