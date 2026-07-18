@@ -257,6 +257,21 @@ final class ASRProcessor: @unchecked Sendable {
 
 @MainActor
 final class DictateViewModel: ObservableObject {
+    /// Recognition latency is part of the compiled CoreML encoder bundle.
+    /// Add another case only when a Speech Swift-compatible bundle for that
+    /// native streaming geometry is available; changing caller chunk sizes
+    /// does not retune the encoder's lookahead.
+    private enum RecognitionMode {
+        case balanced320ms
+
+        var modelID: String {
+            switch self {
+            case .balanced320ms:
+                NemotronStreamingASRModel.defaultModelId
+            }
+        }
+    }
+
     @Published var sentences: [String] = []
     @Published var partialText = ""
     @Published var isRecording = false
@@ -280,6 +295,7 @@ final class DictateViewModel: ObservableObject {
     // Keep language policy at the app/backend boundary so it can become a
     // preference without changing the processor lifecycle.
     private let transcriptionLanguage: String? = "en-US"
+    private let recognitionMode: RecognitionMode = .balanced320ms
 
     var modelLoaded: Bool { model != nil && vad != nil }
 
@@ -309,10 +325,13 @@ final class DictateViewModel: ObservableObject {
         guard model == nil else { return }
         isLoading = true
         loadingStatus = "Downloading ASR model..."
+        let recognitionModelID = recognitionMode.modelID
 
         do {
             let loaded = try await Task.detached {
-                let loaded = try await NemotronStreamingASRModel.fromPretrained { [weak self] progress, status in
+                let loaded = try await NemotronStreamingASRModel.fromPretrained(
+                    modelId: recognitionModelID
+                ) { [weak self] progress, status in
                     DispatchQueue.main.async {
                         let percent = Int(progress * 100)
                         self?.loadingStatus = status.isEmpty
@@ -333,7 +352,10 @@ final class DictateViewModel: ObservableObject {
                 try await SileroVADModel.fromPretrained(engine: .coreml)
             }.value
             loadingStatus = ""
-            dlog("Models loaded (Nemotron ASR language=\(transcriptionLanguage ?? "auto") + VAD)")
+            dlog(
+                "Models loaded (Nemotron ASR chunk=\(loaded.config.streaming.chunkMs)ms "
+                    + "language=\(transcriptionLanguage ?? "auto") + VAD)"
+            )
         } catch {
             errorMessage = "Failed: \(error.localizedDescription)"
             loadingStatus = ""
