@@ -289,6 +289,7 @@ final class DictateViewModel: ObservableObject {
     private let processQueue = DispatchQueue(label: "dictate.asr", qos: .userInteractive)
     private var processTimer: DispatchSourceTimer?
     private var partialCommitTracker = PartialCommitTracker()
+    private let clipboardPreserver = ClipboardPreserver()
     private var isStopping = false
     // Change this to `.toggle` to restore press-on/press-off hotkey behavior.
     private let hotKeyActivationMode: GlobalHotKey.ActivationMode = .pushToTalk
@@ -402,6 +403,7 @@ final class DictateViewModel: ObservableObject {
         partialText = ""
         sentences.removeAll()
         partialCommitTracker.reset()
+        clipboardPreserver.beginSession()
 
         do {
             let backend = StreamingASRBackend.nemotron(
@@ -442,6 +444,7 @@ final class DictateViewModel: ObservableObject {
             isRecording = true
             dlog("Recording started")
         } catch {
+            clipboardPreserver.finishSession()
             errorMessage = "Failed: \(error.localizedDescription)"
         }
     }
@@ -456,6 +459,7 @@ final class DictateViewModel: ObservableObject {
 
         guard let processor else {
             recorder.stop { [weak self] in
+                self?.clipboardPreserver.finishSession()
                 self?.isStopping = false
             }
             return
@@ -476,6 +480,7 @@ final class DictateViewModel: ObservableObject {
             handlePartialTranscripts(finalPartials)
             forceFinalizeCurrentUtterance(reason: "explicit-stop")
             partialText = ""
+            clipboardPreserver.finishSession()
             isStopping = false
         }
     }
@@ -595,8 +600,7 @@ final class DictateViewModel: ObservableObject {
               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0x09, keyDown: false)
         else { return false }
 
-        NSPasteboard.general.clearContents()
-        guard NSPasteboard.general.setString(payload, forType: .string) else { return false }
+        guard clipboardPreserver.writeTemporaryString(payload) else { return false }
         keyDown.flags = .maskCommand
         keyUp.flags = .maskCommand
         keyDown.post(tap: .cghidEventTap)
