@@ -4,7 +4,7 @@ import XCTest
 final class StreamingSessionManagerTests: XCTestCase {
     func testBatchAdapterBacksOffPartialCadenceForLongUtterances() throws {
         var transcribedSampleCounts: [Int] = []
-        let session = BatchRetranscriptionSession { audio in
+        let session = BatchRetranscriptionSession(tuning: .fromEnvironment([:])) { audio in
             transcribedSampleCounts.append(audio.count)
             return "words"
         }
@@ -22,7 +22,7 @@ final class StreamingSessionManagerTests: XCTestCase {
 
     func testBatchAdapterSkipsStalePartialAndAdvancesCadence() throws {
         var transcriptionCount = 0
-        let session = BatchRetranscriptionSession { _ in
+        let session = BatchRetranscriptionSession(tuning: .fromEnvironment([:])) { _ in
             transcriptionCount += 1
             return "words"
         }
@@ -38,6 +38,24 @@ final class StreamingSessionManagerTests: XCTestCase {
         ).isEmpty)
         XCTAssertEqual(try session.pushAudio([0], emitPartials: true).count, 1)
         XCTAssertEqual(transcriptionCount, 1)
+    }
+
+    func testBatchTuningReadsEnvironmentAndFallsBackForInvalidValues() {
+        let tuning = BatchASRTuning.fromEnvironment([
+            "DICTATE_PARTIALS": "0",
+            "DICTATE_PARTIAL_INTERVAL_SECONDS": "3.5",
+            "DICTATE_LONG_PARTIAL_INTERVAL_SECONDS": "invalid",
+            "DICTATE_LONG_UTTERANCE_SECONDS": "12",
+            "DICTATE_MAX_SEGMENT_SECONDS": "25",
+            "DICTATE_BACKPRESSURE_SECONDS": "1.5",
+        ])
+
+        XCTAssertFalse(tuning.emitsPartials)
+        XCTAssertEqual(tuning.initialPartialIntervalSamples, 56_000)
+        XCTAssertEqual(tuning.longPartialIntervalSamples, 64_000)
+        XCTAssertEqual(tuning.longUtteranceThresholdSamples, 192_000)
+        XCTAssertEqual(tuning.maximumSegmentSamples, 400_000)
+        XCTAssertEqual(tuning.backpressureThresholdSamples, 24_000)
     }
 
     func testVADBoundaryFinalizesOnceAndRecreatesSession() throws {

@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS("15.0")],
     dependencies: [
         .package(path: "vendor/speech-swift"),
+        .package(url: "https://github.com/ml-explore/mlx-swift", from: "0.30.0"),
     ],
     targets: [
         .executableTarget(
@@ -13,6 +14,7 @@ let package = Package(
             dependencies: [
                 .product(name: "Qwen3ASR", package: "speech-swift"),
                 .product(name: "SpeechVAD", package: "speech-swift"),
+                .product(name: "MLX", package: "mlx-swift"),
             ]
         ),
         .testTarget(

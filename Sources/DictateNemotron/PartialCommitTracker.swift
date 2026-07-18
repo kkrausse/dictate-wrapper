@@ -45,7 +45,7 @@ struct PartialCommitTracker {
     // Keep cumulative Qwen hypotheses visible longer before pasting their
     // stable prefix. This makes late punctuation and capitalization revisions
     // observable while still allowing incremental insertion during long speech.
-    static let stableDuration = Duration.seconds(2.1)
+    static let stableDuration = Duration.seconds(5.1)
     static let trailingWordGuard = 3
     static let minimumWordCount = 2
     static let minimumCharacterCount = 10

@@ -1,5 +1,47 @@
 import Foundation
+import MLX
 import Qwen3ASR
+
+struct BatchASRTuning: Sendable {
+    static let sampleRate = 16_000
+
+    let emitsPartials: Bool
+    let initialPartialIntervalSamples: Int
+    let longPartialIntervalSamples: Int
+    let longUtteranceThresholdSamples: Int
+    let maximumSegmentSamples: Int
+    let backpressureThresholdSamples: Int
+
+    static func fromEnvironment(
+        _ environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> BatchASRTuning {
+        BatchASRTuning(
+            emitsPartials: environment["DICTATE_PARTIALS"] != "0",
+            initialPartialIntervalSamples: samples(
+                environment["DICTATE_PARTIAL_INTERVAL_SECONDS"], defaultSeconds: 2
+            ),
+            longPartialIntervalSamples: samples(
+                environment["DICTATE_LONG_PARTIAL_INTERVAL_SECONDS"], defaultSeconds: 4
+            ),
+            longUtteranceThresholdSamples: samples(
+                environment["DICTATE_LONG_UTTERANCE_SECONDS"], defaultSeconds: 10
+            ),
+            maximumSegmentSamples: samples(
+                environment["DICTATE_MAX_SEGMENT_SECONDS"], defaultSeconds: 20
+            ),
+            backpressureThresholdSamples: samples(
+                environment["DICTATE_BACKPRESSURE_SECONDS"], defaultSeconds: 1
+            )
+        )
+    }
+
+    private static func samples(_ value: String?, defaultSeconds: Double) -> Int {
+        let seconds = value.flatMap(Double.init).flatMap {
+            $0.isFinite && $0 > 0 ? $0 : nil
+        } ?? defaultSeconds
+        return max(1, Int((seconds * Double(sampleRate)).rounded()))
+    }
+}
 
 enum BoundaryReason: String, Sendable {
     case modelOutput = "model-output"
@@ -29,15 +71,18 @@ extension StreamingASRSession {
 struct StreamingASRBackend {
     let name: String
     let explicitStopPostRollSamples: Int
+    let batchTuning: BatchASRTuning?
     let makeSession: () throws -> any StreamingASRSession
 
     init(
         name: String,
         explicitStopPostRollSamples: Int = 0,
+        batchTuning: BatchASRTuning? = nil,
         makeSession: @escaping () throws -> any StreamingASRSession
     ) {
         self.name = name
         self.explicitStopPostRollSamples = explicitStopPostRollSamples
+        self.batchTuning = batchTuning
         self.makeSession = makeSession
     }
 
@@ -45,16 +90,23 @@ struct StreamingASRBackend {
         model: Qwen3ASRModel,
         language: String?
     ) -> StreamingASRBackend {
+        let tuning = BatchASRTuning.fromEnvironment()
+        let clearsMLXCache = ProcessInfo.processInfo.environment["DICTATE_MLX_CLEAR_CACHE"] != "0"
         return StreamingASRBackend(
-            name: "QWEN3-ASR"
+            name: "QWEN3-ASR",
+            batchTuning: tuning
         ) {
-            BatchRetranscriptionSession { audio in
-                model.transcribe(
+            BatchRetranscriptionSession(tuning: tuning) { audio in
+                let text = model.transcribe(
                     audio: audio,
                     sampleRate: 16_000,
                     language: language,
                     maxTokens: 448
                 )
+                if clearsMLXCache {
+                    Memory.clearCache()
+                }
+                return text
             }
         }
     }
@@ -193,18 +245,19 @@ enum StreamingSessionManagerError: Error {
 /// surface. Native streaming models should implement `StreamingASRSession`
 /// directly so their encoder caches and decoder state remain intact.
 final class BatchRetranscriptionSession: StreamingASRSession {
-    private static let sampleRate = 16_000
-    private static let initialPartialIntervalSamples = sampleRate * 2
-    private static let longUtterancePartialIntervalSamples = sampleRate * 4
-    private static let longUtteranceThresholdSamples = sampleRate * 10
-
+    private let tuning: BatchASRTuning
     private let transcribeBatch: ([Float]) -> String
     private var audio: [Float] = []
-    private var nextPartialSampleCount = initialPartialIntervalSamples
+    private var nextPartialSampleCount: Int
     private var latestText = ""
 
-    init(transcribeBatch: @escaping ([Float]) -> String) {
+    init(
+        tuning: BatchASRTuning = .fromEnvironment(),
+        transcribeBatch: @escaping ([Float]) -> String
+    ) {
+        self.tuning = tuning
         self.transcribeBatch = transcribeBatch
+        nextPartialSampleCount = tuning.initialPartialIntervalSamples
     }
 
     func pushAudio(
@@ -223,9 +276,9 @@ final class BatchRetranscriptionSession: StreamingASRSession {
     }
 
     private func partialInterval(for sampleCount: Int) -> Int {
-        sampleCount >= Self.longUtteranceThresholdSamples
-            ? Self.longUtterancePartialIntervalSamples
-            : Self.initialPartialIntervalSamples
+        sampleCount >= tuning.longUtteranceThresholdSamples
+            ? tuning.longPartialIntervalSamples
+            : tuning.initialPartialIntervalSamples
     }
 
     func finalize() throws -> [StreamingTranscript] {

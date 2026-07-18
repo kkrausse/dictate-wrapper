@@ -29,6 +29,7 @@ final class ASRProcessor: @unchecked Sendable {
     private static let savesDebugAudio = ProcessInfo.processInfo.environment["DICTATE_SAVE_DEBUG_AUDIO"] == "1"
 
     private let sessions: StreamingSessionManager
+    private let batchTuning: BatchASRTuning?
     private let vad: SileroVADModel
     private let lock = NSLock()
     private let buffer = UnsafeMutablePointer<[Float]>.allocate(capacity: 1)
@@ -41,14 +42,11 @@ final class ASRProcessor: @unchecked Sendable {
 
     // 30 VAD chunks at 512 samples and 16 kHz is about 960 ms of silence.
     private let forceFinalizeSilentChunks = 30
-    // Batch ASR cost grows with the accumulated utterance. Bound each batch
-    // segment rather than trimming at guessed word/sample boundaries.
-    private let maximumBatchSegmentSamples = 20 * 16_000
-    private let partialBackpressureThresholdSamples = 16_000
     private var sessionSampleCount = 0
 
     init(backend: StreamingASRBackend, vad: SileroVADModel) throws {
         sessions = try StreamingSessionManager(backend: backend)
+        batchTuning = backend.batchTuning
         self.vad = vad
         buffer.initialize(to: [])
         vadLeftover.initialize(to: [])
@@ -173,8 +171,13 @@ final class ASRProcessor: @unchecked Sendable {
 
         do {
             appendDebugAudio(chunk)
-            let emitPartials = chunk.count < partialBackpressureThresholdSamples
-            if !emitPartials {
+            let emitPartials = batchTuning.map {
+                $0.emitsPartials && chunk.count < $0.backpressureThresholdSamples
+            } ?? true
+            if let batchTuning,
+               batchTuning.emitsPartials,
+               !emitPartials
+            {
                 dlog(
                     "asr: partial skipped for backpressure backlog=\(chunk.count) "
                         + "(\(String(format: "%.2f", Double(chunk.count) / 16_000)))s"
@@ -202,8 +205,9 @@ final class ASRProcessor: @unchecked Sendable {
                 logBoundaryResult(boundary, reason: .vadFinalization)
                 hasPendingUtterance = false
                 sessionSampleCount = 0
-            } else if hasPendingUtterance
-                && sessionSampleCount >= maximumBatchSegmentSamples
+            } else if let batchTuning,
+                hasPendingUtterance,
+                sessionSampleCount >= batchTuning.maximumSegmentSamples
             {
                 let boundary = sessions.finalize(
                     reason: .maximumDurationFinalization,

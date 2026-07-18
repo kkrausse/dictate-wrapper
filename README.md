@@ -25,6 +25,38 @@ Set `DICTATE_SAVE_DEBUG_AUDIO=1` in the app environment to retain the complete s
 
 Silero VAD decides when about 960 ms of sustained silence should finalize and reset the utterance. Releasing the push-to-talk key also explicitly finalizes any pending audio.
 
+### Batch-ASR performance settings
+
+These environment variables tune the Qwen batch adapter. They will also apply to other non-streaming batch models such as Parakeet-TDT if added later; native streaming models such as Nemotron use their own stateful configuration.
+
+| Variable | Default | Effect |
+| --- | ---: | --- |
+| `DICTATE_PARTIALS` | `1` | Set to `0` to disable all repeated partial transcription. Audio is transcribed only at VAD, the maximum segment boundary, or explicit stop. This minimizes compute and avoids falling behind, at the cost of no live transcript. |
+| `DICTATE_PARTIAL_INTERVAL_SECONDS` | `2` | Seconds of new audio between cumulative partial transcriptions at the start of an utterance. Larger values reduce redundant work but update the live transcript less often. |
+| `DICTATE_LONG_UTTERANCE_SECONDS` | `10` | Utterance length at which the adapter switches to the slower long-utterance cadence. |
+| `DICTATE_LONG_PARTIAL_INTERVAL_SECONDS` | `4` | Seconds of new audio between partials after the long-utterance threshold. |
+| `DICTATE_MAX_SEGMENT_SECONDS` | `20` | Finalizes and resets a continuous batch segment at this duration, bounding cumulative inference cost. Lower values reduce worst-case latency but can split sentences more often. |
+| `DICTATE_BACKPRESSURE_SECONDS` | `1` | If at least this much audio accumulated while inference was busy, skip the now-stale partial and catch up. Final transcriptions are never skipped. |
+| `DICTATE_MLX_CLEAR_CACHE` | `1` | Clears MLX's reusable temporary-allocation cache after every completed Qwen transcription. Leave enabled to prevent cumulative passes over growing inputs from retaining a large GPU-memory high-water mark. Set to `0` only when benchmarking whether allocator reuse improves latency enough to justify higher memory use. |
+| `DICTATE_SAVE_DEBUG_AUDIO` | `0` | Set to `1` to retain the entire recording in memory and write `/tmp/dictate-debug.wav` on stop. Leave disabled for normal use. |
+
+All duration values accept positive decimal seconds. Missing, non-numeric, zero, and negative values use the documented defaults.
+
+For the lowest compute use, run final-only transcription:
+
+```bash
+DICTATE_PARTIALS=0 make run
+```
+
+For live text with fewer repeated passes than the defaults:
+
+```bash
+DICTATE_PARTIAL_INTERVAL_SECONDS=3 \
+DICTATE_LONG_PARTIAL_INTERVAL_SECONDS=6 \
+DICTATE_MAX_SEGMENT_SECONDS=20 \
+make run
+```
+
 This is currently a Swift Package Manager development executable. Packaging, signing, configurable shortcuts, login-item support, and an installable macOS app bundle are future work.
 
 ## Requirements
@@ -83,7 +115,7 @@ The app appears as a microphone icon in the macOS menu bar rather than in the Do
 
 On first use, macOS asks for microphone and Accessibility access. Accessibility access is required to synthesize `Cmd+V` in the frontmost application. Development builds may need to be re-authorized after the executable changes. Permissions can be managed in **System Settings > Privacy & Security**.
 
-Diagnostic logs and captured debug audio are currently written to `/tmp/dictate.log` and `/tmp/dictate-debug.wav`.
+Diagnostic logs are written to `/tmp/dictate.log`. Debug audio is written to `/tmp/dictate-debug.wav` only when `DICTATE_SAVE_DEBUG_AUDIO=1`.
 
 ## Updating Speech Swift
 
