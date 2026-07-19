@@ -16,7 +16,28 @@ The development app currently:
 
 The default transcription backend is FluidAudio's Parakeet Unified English 0.6B CoreML model at its 1120 ms streaming latency tier. On first run, FluidAudio downloads the required CoreML artifacts from `FluidInference/parakeet-unified-en-0.6b-coreml` and caches them in `~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b`. Its streaming encoder reprocesses a bounded left/chunk/right audio window while preserving RNN-T decoder state across microphone callbacks. First startup downloads and compiles the model artifacts, while later starts use that cache.
 
-Model choice is always explicit. The default is `DICTATE_ASR_BACKEND=fluid-parakeet-unified-1120`; set `DICTATE_ASR_BACKEND=fluid-nemotron-1120` to retain the previous FluidAudio model, `DICTATE_ASR_BACKEND=speech-swift-nemotron` for the Speech Swift streaming engine, or `DICTATE_ASR_BACKEND=qwen3` for the legacy batch Qwen3 engine. An unknown value is shown as a load error; the app never silently falls back to a different model after a load or inference failure.
+## Model Selection
+
+The app reads `DICTATE_ASR_BACKEND` once at startup. Omitting it, including when running plain `make run`, selects the default Parakeet Unified model. An unknown value is shown as a load error; the app never silently falls back to a different model after a load or inference failure.
+
+| Backend value | Model | Implementation | Launch command |
+| --- | --- | --- | --- |
+| `fluid-parakeet-unified-1120` | Parakeet Unified English 0.6B CoreML, 1120 ms | FluidAudio native streaming | `make run` |
+| `fluid-nemotron-1120` | Nemotron Speech Streaming English 0.6B CoreML, 1120 ms | FluidAudio native streaming | `DICTATE_ASR_BACKEND=fluid-nemotron-1120 make run` |
+| `speech-swift-nemotron` | Nemotron Speech Streaming English 0.6B CoreML, 160 ms artifact geometry | Speech Swift native streaming | `DICTATE_ASR_BACKEND=speech-swift-nemotron make run` |
+| `qwen3` | Qwen3-ASR 0.6B MLX 4-bit | Speech Swift batch adapter | `DICTATE_ASR_BACKEND=qwen3 make run` |
+
+The FluidAudio models download and cache independently on their first use. The previous FluidAudio Nemotron backend downloads the `nemotron_coreml_1120ms` artifact from `FluidInference/nemotron-speech-streaming-en-0.6b-coreml` and caches it in `~/Library/Application Support/FluidAudio/Models/nemotron-streaming/1120ms`.
+
+`speech-swift-nemotron` defaults to `aufklarer/Nemotron-Speech-Streaming-0.6B-CoreML-INT8`. Set `DICTATE_NEMOTRON_MODEL_ID` to use a compatible alternative bundle, such as a future bundle with a different exported chunk geometry:
+
+```bash
+DICTATE_ASR_BACKEND=speech-swift-nemotron \
+DICTATE_NEMOTRON_MODEL_ID=<compatible-model-id> \
+make run
+```
+
+`qwen3` currently uses the fixed `aufklarer/Qwen3-ASR-0.6B-MLX-4bit` model ID. It does not have a model-ID override.
 
 ## Recognition behavior
 
