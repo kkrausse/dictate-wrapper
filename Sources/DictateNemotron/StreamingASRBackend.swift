@@ -1,5 +1,6 @@
 import Foundation
 import MLX
+import NemotronStreamingASR
 import Qwen3ASR
 
 struct BatchASRTuning: Sendable {
@@ -109,6 +110,57 @@ struct StreamingASRBackend {
                 return text
             }
         }
+    }
+
+    static func nemotronEnglish(
+        model: NemotronStreamingASRModel
+    ) -> StreamingASRBackend {
+        StreamingASRBackend(
+            name: "NEMOTRON-STREAMING-EN",
+            // Give the RNN-T one complete native chunk on an explicit
+            // push-to-talk release so trailing tokens can leave its cache.
+            explicitStopPostRollSamples: model.config.streaming.chunkMs
+                * model.config.sampleRate / 1_000
+        ) {
+            NemotronEnglishStreamingSession(
+                session: try model.createSession(language: "en-US")
+            )
+        }
+    }
+}
+
+/// Thin app adapter around speech-swift's stateful, cache-aware RNN-T
+/// session. Unlike `BatchRetranscriptionSession`, every push processes only
+/// new audio while encoder caches and decoder state survive between pushes.
+final class NemotronEnglishStreamingSession: StreamingASRSession {
+    private let session: NemotronStreamingASR.StreamingSession
+
+    init(session: NemotronStreamingASR.StreamingSession) {
+        self.session = session
+    }
+
+    func pushAudio(
+        _ samples: [Float],
+        emitPartials: Bool
+    ) throws -> [StreamingTranscript] {
+        let partials = try session.pushAudio(samples)
+        guard emitPartials else { return [] }
+        return partials.map(Self.transcript)
+    }
+
+    func finalize() throws -> [StreamingTranscript] {
+        try session.finalize().map(Self.transcript)
+    }
+
+    private static func transcript(
+        _ partial: NemotronStreamingASRModel.PartialTranscript
+    ) -> StreamingTranscript {
+        StreamingTranscript(
+            text: partial.text.trimmingCharacters(in: .whitespacesAndNewlines),
+            isFinal: partial.isFinal,
+            segmentIndex: partial.segmentIndex,
+            boundaryReason: .modelOutput
+        )
     }
 }
 

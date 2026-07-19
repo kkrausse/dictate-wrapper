@@ -15,11 +15,13 @@ The development app currently:
 - Pastes each finalized utterance at the cursor in the frontmost app.
 - Flushes pending audio when dictation stops so the ending is not truncated.
 
-The current transcription backend is Speech Swift's Qwen3-ASR 0.6B MLX model with Silero VAD. It uses the `aufklarer/Qwen3-ASR-0.6B-MLX-4bit` bundle and an explicit `en` language hint for English-only dictation. The backend is isolated behind an app-local streaming session interface and factory so model-specific transcripts and lifecycle rules do not leak into the view model.
+The default transcription backend is Speech Swift's English-only Nemotron Speech Streaming 0.6B CoreML model with Silero VAD. It uses the `aufklarer/Nemotron-Speech-Streaming-0.6B-CoreML-INT8` bundle and keeps the cache-aware encoder and RNN-T decoder session alive across microphone callbacks, so each native step processes only new audio. Set `DICTATE_ASR_BACKEND=qwen3` to switch back to the existing non-streaming Qwen3-ASR implementation.
 
 ## Recognition behavior
 
-Qwen3-ASR transcribes the accumulated utterance rather than maintaining Nemotron-style native streaming state. The reusable batch-ASR adapter refreshes its partial hypothesis every two seconds initially and every four seconds after ten seconds of continuous audio. It finalizes at a VAD or explicit-stop boundary and caps uninterrupted batch segments at 20 seconds, avoiding unbounded cumulative retranscription without guessing word-to-audio boundaries. Its stable-token commit policy currently waits 2.1 seconds and holds back the newest three words before pasting partial text.
+Nemotron emits native incremental partials and preserves streaming state until a VAD or explicit-stop boundary. Qwen3-ASR remains available through the reusable batch-ASR adapter; it refreshes its cumulative hypothesis every two seconds initially and every four seconds after ten seconds of continuous audio.
+
+NVIDIA supports 80, 160, 560, and 1120 ms runtime geometries, but the currently published Speech Swift English CoreML artifact is compiled for 160 ms. Chunk geometry is part of that CoreML encoder export, so buffering 560 ms in this app would not produce the 560 ms accuracy operating point. `DICTATE_NEMOTRON_MODEL_ID` can select a future Speech Swift-compatible English bundle compiled for 560 ms without changing app code; the active native geometry is logged at startup.
 
 Set `DICTATE_SAVE_DEBUG_AUDIO=1` in the app environment to retain the complete session and write `/tmp/dictate-debug.wav` when recording stops. Debug audio is disabled by default to avoid continuously growing memory use during dictation.
 
