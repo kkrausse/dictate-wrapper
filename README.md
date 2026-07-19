@@ -1,8 +1,8 @@
 # Dictate Nemotron
 
-Dictate Nemotron is a macOS menu-bar dictation application for Apple Silicon. Press a global keyboard shortcut, speak, and have finalized text pasted into whichever application currently has focus.
+Dictate Nemotron is a macOS menu-bar dictation application for Apple Silicon. Press a global keyboard shortcut, speak, and have dictated text pasted into whichever application currently has focus.
 
-The project is intentionally app-focused. [Speech Swift](https://github.com/soniqo/speech-swift) is pinned under `vendor/speech-swift` as a Git submodule and provides the on-device speech models and audio infrastructure.
+The project is intentionally app-focused. [FluidAudio](https://github.com/FluidInference/FluidAudio) and [Speech Swift](https://github.com/soniqo/speech-swift) are pinned Git submodules under `vendor/`. FluidAudio provides the default native streaming path; Speech Swift remains available as an explicit rollback path.
 
 ## Current Status
 
@@ -11,21 +11,24 @@ The development app currently:
 - Uses Right Option as a global push-to-talk shortcut.
 - Captures microphone audio and transcribes it locally.
 - Shows partial and finalized text in a menu-bar popover.
-- Uses voice activity detection to finalize utterances promptly.
-- Pastes each finalized utterance at the cursor in the frontmost app.
+- Pastes append-only FluidAudio token suffixes at the cursor in the frontmost app.
 - Flushes pending audio when dictation stops so the ending is not truncated.
 
-The default transcription backend is Speech Swift's English-only Nemotron Speech Streaming 0.6B CoreML model with Silero VAD. It uses the `aufklarer/Nemotron-Speech-Streaming-0.6B-CoreML-INT8` bundle and keeps the cache-aware encoder and RNN-T decoder session alive across microphone callbacks, so each native step processes only new audio. Set `DICTATE_ASR_BACKEND=qwen3` to switch back to the existing non-streaming Qwen3-ASR implementation.
+The default transcription backend is FluidAudio's English Nemotron Speech Streaming 0.6B 560 ms CoreML artifact, `FluidInference/nemotron-speech-streaming-en-0.6b-coreml/560ms`. Its cache-aware encoder and RNN-T decoder persist across microphone callbacks, so each native step processes only new audio. FluidAudio stores downloaded models in `~/Library/Application Support/FluidAudio/Models`; first startup downloads and compiles the model artifacts, while later starts use that cache.
+
+Model choice is always explicit. Set `DICTATE_ASR_BACKEND=speech-swift-nemotron` for the prior Speech Swift streaming engine or `DICTATE_ASR_BACKEND=qwen3` for the legacy batch Qwen3 engine. An unknown value is shown as a load error; the app never silently falls back to a different model after a load or inference failure.
 
 ## Recognition behavior
 
-Nemotron emits native incremental partials and preserves streaming state until a VAD or explicit-stop boundary. Qwen3-ASR remains available through the reusable batch-ASR adapter; it refreshes its cumulative hypothesis every two seconds initially and every four seconds after ten seconds of continuous audio.
+FluidAudio Nemotron emits a cumulative decode of an append-only RNN-T token stream. The app validates that every callback has the previous callback as a prefix and pastes only the new suffix immediately. It does not apply the legacy 5.1-second stability delay, trailing-word guard, or edit-distance realignment. If the prefix invariant fails, the changed hypothesis remains visible in the dictation UI and is logged, but the app does not guess at a replacement in the focused application.
 
-NVIDIA supports 80, 160, 560, and 1120 ms runtime geometries, but the currently published Speech Swift English CoreML artifact is compiled for 160 ms. Chunk geometry is part of that CoreML encoder export, so buffering 560 ms in this app would not produce the 560 ms accuracy operating point. `DICTATE_NEMOTRON_MODEL_ID` can select a future Speech Swift-compatible English bundle compiled for 560 ms without changing app code; the active native geometry is logged at startup.
+FluidAudio finalizes only when push-to-talk is released. The app drains all captured recorder audio, then calls FluidAudio `finish()` exactly once; FluidAudio owns residual padding, so the app does not add a silent post-roll or load a separate VAD model. Qwen3-ASR and Speech Swift Nemotron retain the existing legacy processor, including its Silero VAD and stability handling where required.
+
+When the `speech-swift-nemotron` rollback backend is selected, NVIDIA supports 80, 160, 560, and 1120 ms runtime geometries, but the currently published Speech Swift English CoreML artifact is compiled for 160 ms. Chunk geometry is part of that CoreML encoder export, so buffering 560 ms in this app would not produce the 560 ms accuracy operating point. `DICTATE_NEMOTRON_MODEL_ID` can select a future Speech Swift-compatible English bundle compiled for 560 ms without changing app code; the active native geometry is logged at startup.
 
 Set `DICTATE_SAVE_DEBUG_AUDIO=1` in the app environment to retain the complete session and write `/tmp/dictate-debug.wav` when recording stops. Debug audio is disabled by default to avoid continuously growing memory use during dictation.
 
-Silero VAD decides when about 960 ms of sustained silence should finalize and reset the utterance. Releasing the push-to-talk key also explicitly finalizes any pending audio.
+The legacy backends use Silero VAD to finalize after about 960 ms of sustained silence. FluidAudio Nemotron instead finalizes explicitly when the push-to-talk key is released.
 
 ### Batch-ASR performance settings
 
@@ -72,7 +75,7 @@ The models are downloaded on first launch, so the first run requires a network c
 
 ## Clone
 
-Clone with the vendored Speech Swift submodule:
+Clone with both vendored submodules:
 
 ```bash
 git clone --recurse-submodules <repository-url>
@@ -119,7 +122,7 @@ On first use, macOS asks for microphone and Accessibility access. Accessibility 
 
 Diagnostic logs are written to `/tmp/dictate.log`. Debug audio is written to `/tmp/dictate-debug.wav` only when `DICTATE_SAVE_DEBUG_AUDIO=1`.
 
-## Updating Speech Swift
+## Updating Submodules
 
 The submodule is pinned so upstream changes are explicit and reviewable:
 
@@ -127,10 +130,12 @@ The submodule is pinned so upstream changes are explicit and reviewable:
 git -C vendor/speech-swift fetch origin
 git -C vendor/speech-swift checkout main
 git -C vendor/speech-swift pull --ff-only
-git add vendor/speech-swift
+git -C vendor/FluidAudio fetch origin
+git -C vendor/FluidAudio checkout 300165b240c45375add402265f62410b6df33cf1
+git add vendor/speech-swift vendor/FluidAudio
 ```
 
-Commit the updated submodule pointer together with any required app changes.
+FluidAudio is pinned to `300165b240c45375add402265f62410b6df33cf1`; choose and review a replacement commit before changing that checkout. Commit updated submodule pointers together with any required app changes.
 
 ## Roadmap
 

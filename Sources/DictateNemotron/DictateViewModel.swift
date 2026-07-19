@@ -316,6 +316,9 @@ final class DictateViewModel: ObservableObject {
     private var model: RecognitionModel?
     private var vad: SileroVADModel?
     private var processor: ASRProcessor?
+    private var selectedEngine: DictationEngine?
+    private var fluidPipeline: FluidStreamingPipeline?
+    private var fluidSessionID: Int?
     private var globalHotKey: GlobalHotKey?
     private let recorder = StreamingRecorder()
     private let commitClock = ContinuousClock()
@@ -324,9 +327,20 @@ final class DictateViewModel: ObservableObject {
     private var partialCommitTracker = PartialCommitTracker()
     private let clipboardPreserver = ClipboardPreserver()
     private var isStopping = false
+    private var isStarting = false
+    private var cancelsFluidStart = false
     // Change this to `.toggle` to restore press-on/press-off hotkey behavior.
     private let hotKeyActivationMode: GlobalHotKey.ActivationMode = .pushToTalk
-    var modelLoaded: Bool { model != nil && vad != nil }
+    var modelLoaded: Bool {
+        switch selectedEngine {
+        case .fluidNemotron560:
+            return fluidPipeline != nil
+        case .speechSwiftNemotron, .qwen3:
+            return model != nil && vad != nil
+        case nil:
+            return false
+        }
+    }
 
     var wordCount: Int {
         let allText = sentences.joined(separator: " ")
@@ -351,14 +365,24 @@ final class DictateViewModel: ObservableObject {
     }
 
     func loadModels() async {
-        guard model == nil else { return }
+        guard !isLoading, selectedEngine == nil else { return }
         isLoading = true
-        loadingStatus = "Downloading ASR model..."
-        let environment = ProcessInfo.processInfo.environment
-        let useQwen = environment["DICTATE_ASR_BACKEND"]?.lowercased() == "qwen3"
 
         do {
-            if useQwen {
+            let engine = try DictationEngine.selected()
+            dlog("Selected dictation engine: \(engine.rawValue)")
+            switch engine {
+            case .fluidNemotron560:
+                loadingStatus = "Loading Nemotron 560 ms..."
+                let pipeline = FluidStreamingPipeline { [weak self] event in
+                    self?.handleFluidPipelineEvent(event)
+                }
+                let displayName = try await pipeline.load()
+                fluidPipeline = pipeline
+                dlog("FluidAudio loaded: \(displayName), chunk=560ms")
+
+            case .qwen3:
+                loadingStatus = "Downloading ASR model..."
                 let loaded = try await Task.detached {
                     try await Qwen3ASRModel.fromPretrained(
                         modelId: Self.qwenModelID
@@ -372,8 +396,10 @@ final class DictateViewModel: ObservableObject {
                     }
                 }.value
                 model = .qwen(loaded)
-            } else {
-                let modelID = environment["DICTATE_NEMOTRON_MODEL_ID"]
+
+            case .speechSwiftNemotron:
+                loadingStatus = "Downloading ASR model..."
+                let modelID = ProcessInfo.processInfo.environment["DICTATE_NEMOTRON_MODEL_ID"]
                     ?? Self.nemotronEnglishModelID
                 let loaded = try await Task.detached {
                     try await NemotronStreamingASRModel.fromPretrained(
@@ -401,12 +427,15 @@ final class DictateViewModel: ObservableObject {
                 }
             }
 
-            loadingStatus = "Loading VAD..."
-            vad = try await Task.detached {
-                try await SileroVADModel.fromPretrained(engine: .coreml)
-            }.value
+            if engine != .fluidNemotron560 {
+                loadingStatus = "Loading VAD..."
+                vad = try await Task.detached {
+                    try await SileroVADModel.fromPretrained(engine: .coreml)
+                }.value
+            }
+            selectedEngine = engine
             loadingStatus = ""
-            dlog("Models loaded (\(useQwen ? "Qwen3-ASR batch en" : "Nemotron streaming en-US") + VAD)")
+            dlog("Models loaded (\(engine.displayName))")
         } catch {
             errorMessage = "Failed: \(error.localizedDescription)"
             loadingStatus = ""
@@ -436,12 +465,12 @@ final class DictateViewModel: ObservableObject {
     }
 
     func startRecording() {
-        dlog("startRecording called, model=\(model != nil), vad=\(vad != nil)")
+        dlog("startRecording called, engine=\(selectedEngine?.rawValue ?? "none")")
         guard !isStopping else {
             dlog("Recorder is still draining the previous stop")
             return
         }
-        guard let model, let vad else {
+        guard modelLoaded else {
             dlog("Models are not ready")
             return
         }
@@ -452,8 +481,19 @@ final class DictateViewModel: ObservableObject {
         errorMessage = nil
         partialText = ""
         sentences.removeAll()
-        partialCommitTracker.reset()
         clipboardPreserver.beginSession()
+
+        if let pipeline = fluidPipeline {
+            startFluidRecording(pipeline)
+            return
+        }
+
+        partialCommitTracker.reset()
+        guard let model, let vad else {
+            clipboardPreserver.finishSession()
+            errorMessage = "The selected legacy engine is not ready."
+            return
+        }
 
         do {
             let backend = model.backend
@@ -498,6 +538,10 @@ final class DictateViewModel: ObservableObject {
 
     func stopRecording() {
         guard !isStopping else { return }
+        if let pipeline = fluidPipeline {
+            stopFluidRecording(pipeline)
+            return
+        }
         isStopping = true
         processTimer?.cancel()
         processTimer = nil
@@ -529,6 +573,99 @@ final class DictateViewModel: ObservableObject {
             partialText = ""
             clipboardPreserver.finishSession()
             isStopping = false
+        }
+    }
+
+    private func startFluidRecording(_ pipeline: FluidStreamingPipeline) {
+        guard !isStarting else { return }
+        isStarting = true
+        cancelsFluidStart = false
+        Task { [weak self, pipeline] in
+            guard let self else { return }
+            do {
+                let sessionID = try await pipeline.startUtterance()
+                guard !Task.isCancelled, !cancelsFluidStart else {
+                    try await pipeline.finishUtterance()
+                    clipboardPreserver.finishSession()
+                    isStarting = false
+                    return
+                }
+                fluidSessionID = sessionID
+                recorder.start { samples in
+                    Task { await pipeline.enqueueAudio(samples) }
+                }
+                isRecording = true
+                dlog("FluidAudio recording started, session=\(sessionID)")
+            } catch {
+                clipboardPreserver.finishSession()
+                errorMessage = "Failed: \(error.localizedDescription)"
+            }
+            isStarting = false
+        }
+    }
+
+    private func stopFluidRecording(_ pipeline: FluidStreamingPipeline) {
+        guard !isStarting else {
+            cancelsFluidStart = true
+            return
+        }
+        isStopping = true
+        isRecording = false
+        isSpeechActive = false
+
+        recorder.stop { [weak self, pipeline] in
+            guard let self else { return }
+            Task { [weak self] in
+                guard let self else { return }
+                do {
+                    try await pipeline.finishUtterance()
+                } catch {
+                    self.errorMessage = "Failed: \(error.localizedDescription)"
+                    dlog("FluidAudio finalization error: \(error)")
+                }
+                self.fluidSessionID = nil
+                self.clipboardPreserver.finishSession()
+                self.isStopping = false
+            }
+        }
+    }
+
+    private func handleFluidPipelineEvent(_ event: FluidStreamingPipelineEvent) {
+        switch event {
+        case .failure(let sessionID, let description):
+            guard sessionID == fluidSessionID else { return }
+            errorMessage = "FluidAudio error: \(description)"
+            dlog("FluidAudio pipeline error session=\(sessionID): \(description)")
+
+        case .transcript(let sessionID, let update):
+            guard sessionID == fluidSessionID else { return }
+            partialText = update.cumulativeText
+
+            if update.kind == .divergence {
+                dlog("FluidAudio append-only divergence session=\(sessionID): \(update.diagnostic ?? "unknown")")
+                errorMessage = "FluidAudio transcript changed after text was pasted; keeping the changed text in the dictation window."
+                return
+            }
+
+            guard update.kind == .appended else { return }
+            let insertionSucceeded = insertCommittedText(
+                update.textToInsert,
+                appendTrailingSpace: update.appendTrailingSpace
+            )
+            if !insertionSucceeded {
+                errorMessage = "Could not insert dictated text into the active application."
+                dlog("FluidAudio insertion failed session=\(sessionID) delta=\(String(reflecting: update.textToInsert))")
+                return
+            }
+
+            dlog(
+                "FluidAudio appended session=\(sessionID) final=\(update.isFinal) "
+                    + "delta=\(String(reflecting: update.textToInsert))"
+            )
+            if update.isFinal {
+                sentences.append(update.cumulativeText)
+                partialText = ""
+            }
         }
     }
 
@@ -634,9 +771,11 @@ final class DictateViewModel: ObservableObject {
     }
 
     private func insertCommittedText(_ text: String, appendTrailingSpace: Bool) -> Bool {
-        guard !text.isEmpty else { return true }
         let payload: String
-        if appendTrailingSpace, text.last.map({ !$0.isWhitespace }) == true {
+        if text.isEmpty {
+            guard appendTrailingSpace else { return true }
+            payload = " "
+        } else if appendTrailingSpace, text.last.map({ !$0.isWhitespace }) == true {
             payload = text + " "
         } else {
             payload = text

@@ -1,3 +1,6 @@
 [submodule "vendor/speech-swift"]
 	path = vendor/speech-swift
 	url = https://github.com/soniqo/speech-swift
+[submodule "vendor/FluidAudio"]
+	path = vendor/FluidAudio
+	url = https://github.com/FluidInference/FluidAudio.git
