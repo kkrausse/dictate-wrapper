@@ -14,7 +14,7 @@ The development app currently:
 - Pastes append-only FluidAudio token suffixes at the cursor in the frontmost app.
 - Flushes pending audio when dictation stops so the ending is not truncated.
 
-The default transcription backend is FluidAudio's English Nemotron Speech Streaming 0.6B 560 ms CoreML artifact, `FluidInference/nemotron-speech-streaming-en-0.6b-coreml/560ms`. Its cache-aware encoder and RNN-T decoder persist across microphone callbacks, so each native step processes only new audio. FluidAudio stores downloaded models in `~/Library/Application Support/FluidAudio/Models`; first startup downloads and compiles the model artifacts, while later starts use that cache.
+The default transcription backend is FluidAudio's English Nemotron Speech Streaming 0.6B 1120 ms CoreML artifact. On first run, FluidAudio downloads the `nemotron_coreml_1120ms` artifact from `FluidInference/nemotron-speech-streaming-en-0.6b-coreml` and caches it in `~/Library/Application Support/FluidAudio/Models/nemotron-streaming/1120ms`. Its cache-aware encoder and RNN-T decoder persist across microphone callbacks, so each native step processes only new audio. First startup downloads and compiles the model artifacts, while later starts use that cache.
 
 Model choice is always explicit. Set `DICTATE_ASR_BACKEND=speech-swift-nemotron` for the prior Speech Swift streaming engine or `DICTATE_ASR_BACKEND=qwen3` for the legacy batch Qwen3 engine. An unknown value is shown as a load error; the app never silently falls back to a different model after a load or inference failure.
 

@@ -14,9 +14,9 @@ protocol FluidStreamingEngine: Actor {
 actor FluidAudioStreamingEngine: FluidStreamingEngine {
     private let manager: any StreamingAsrManager
     private var partialCallback: (@Sendable (String) -> Void)?
-    private var loadedDisplayName = StreamingModelVariant.nemotron560ms.displayName
+    private var loadedDisplayName = StreamingModelVariant.nemotron1120ms.displayName
 
-    init(manager: any StreamingAsrManager = StreamingModelVariant.nemotron560ms.createManager()) {
+    init(manager: any StreamingAsrManager = StreamingModelVariant.nemotron1120ms.createManager()) {
         self.manager = manager
     }
 

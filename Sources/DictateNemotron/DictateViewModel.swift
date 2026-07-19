@@ -333,7 +333,7 @@ final class DictateViewModel: ObservableObject {
     private let hotKeyActivationMode: GlobalHotKey.ActivationMode = .pushToTalk
     var modelLoaded: Bool {
         switch selectedEngine {
-        case .fluidNemotron560:
+        case .fluidNemotron1120:
             return fluidPipeline != nil
         case .speechSwiftNemotron, .qwen3:
             return model != nil && vad != nil
@@ -372,14 +372,14 @@ final class DictateViewModel: ObservableObject {
             let engine = try DictationEngine.selected()
             dlog("Selected dictation engine: \(engine.rawValue)")
             switch engine {
-            case .fluidNemotron560:
-                loadingStatus = "Loading Nemotron 560 ms..."
+            case .fluidNemotron1120:
+                loadingStatus = "Loading Nemotron 1120 ms..."
                 let pipeline = FluidStreamingPipeline { [weak self] event in
                     self?.handleFluidPipelineEvent(event)
                 }
                 let displayName = try await pipeline.load()
                 fluidPipeline = pipeline
-                dlog("FluidAudio loaded: \(displayName), chunk=560ms")
+                dlog("FluidAudio loaded: \(displayName), chunk=1120ms")
 
             case .qwen3:
                 loadingStatus = "Downloading ASR model..."
@@ -427,7 +427,7 @@ final class DictateViewModel: ObservableObject {
                 }
             }
 
-            if engine != .fluidNemotron560 {
+            if engine != .fluidNemotron1120 {
                 loadingStatus = "Loading VAD..."
                 vad = try await Task.detached {
                     try await SileroVADModel.fromPretrained(engine: .coreml)
