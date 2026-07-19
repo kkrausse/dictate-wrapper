@@ -12,12 +12,24 @@ protocol FluidStreamingEngine: Actor {
 }
 
 actor FluidAudioStreamingEngine: FluidStreamingEngine {
+    static let defaultModelVariant: StreamingModelVariant = .parakeetUnified1120ms
+
     private let manager: any StreamingAsrManager
     private var partialCallback: (@Sendable (String) -> Void)?
-    private var loadedDisplayName = StreamingModelVariant.nemotron1120ms.displayName
+    private var loadedDisplayName: String
 
-    init(manager: any StreamingAsrManager = StreamingModelVariant.nemotron1120ms.createManager()) {
+    init(modelVariant: StreamingModelVariant = defaultModelVariant) {
+        manager = modelVariant.createManager()
+        loadedDisplayName = modelVariant.displayName
+    }
+
+    init(manager: any StreamingAsrManager) {
         self.manager = manager
+        loadedDisplayName = Self.defaultModelVariant.displayName
+    }
+
+    static func legacyNemotron1120ms() -> FluidAudioStreamingEngine {
+        FluidAudioStreamingEngine(modelVariant: .nemotron1120ms)
     }
 
     var displayName: String {

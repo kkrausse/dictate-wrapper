@@ -1,12 +1,15 @@
 import Foundation
 
 enum DictationEngine: String, CaseIterable, Sendable {
+    case fluidParakeetUnified1120 = "fluid-parakeet-unified-1120"
     case fluidNemotron1120 = "fluid-nemotron-1120"
     case speechSwiftNemotron = "speech-swift-nemotron"
     case qwen3
 
     var displayName: String {
         switch self {
+        case .fluidParakeetUnified1120:
+            return "FluidAudio Parakeet Unified 0.6B (1120 ms)"
         case .fluidNemotron1120:
             return "FluidAudio Nemotron 0.6B (1120 ms)"
         case .speechSwiftNemotron:
@@ -20,7 +23,7 @@ enum DictationEngine: String, CaseIterable, Sendable {
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) throws -> DictationEngine {
         guard let rawValue = environment["DICTATE_ASR_BACKEND"] else {
-            return .fluidNemotron1120
+            return .fluidParakeetUnified1120
         }
         guard let engine = DictationEngine(rawValue: rawValue.lowercased()) else {
             throw DictationEngineSelectionError.unsupported(rawValue)

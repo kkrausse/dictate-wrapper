@@ -14,21 +14,21 @@ The development app currently:
 - Pastes append-only FluidAudio token suffixes at the cursor in the frontmost app.
 - Flushes pending audio when dictation stops so the ending is not truncated.
 
-The default transcription backend is FluidAudio's English Nemotron Speech Streaming 0.6B 1120 ms CoreML artifact. On first run, FluidAudio downloads the `nemotron_coreml_1120ms` artifact from `FluidInference/nemotron-speech-streaming-en-0.6b-coreml` and caches it in `~/Library/Application Support/FluidAudio/Models/nemotron-streaming/1120ms`. Its cache-aware encoder and RNN-T decoder persist across microphone callbacks, so each native step processes only new audio. First startup downloads and compiles the model artifacts, while later starts use that cache.
+The default transcription backend is FluidAudio's Parakeet Unified English 0.6B CoreML model at its 1120 ms streaming latency tier. On first run, FluidAudio downloads the required CoreML artifacts from `FluidInference/parakeet-unified-en-0.6b-coreml` and caches them in `~/Library/Application Support/FluidAudio/Models/parakeet-unified-en-0.6b`. Its streaming encoder reprocesses a bounded left/chunk/right audio window while preserving RNN-T decoder state across microphone callbacks. First startup downloads and compiles the model artifacts, while later starts use that cache.
 
-Model choice is always explicit. Set `DICTATE_ASR_BACKEND=speech-swift-nemotron` for the prior Speech Swift streaming engine or `DICTATE_ASR_BACKEND=qwen3` for the legacy batch Qwen3 engine. An unknown value is shown as a load error; the app never silently falls back to a different model after a load or inference failure.
+Model choice is always explicit. The default is `DICTATE_ASR_BACKEND=fluid-parakeet-unified-1120`; set `DICTATE_ASR_BACKEND=fluid-nemotron-1120` to retain the previous FluidAudio model, `DICTATE_ASR_BACKEND=speech-swift-nemotron` for the Speech Swift streaming engine, or `DICTATE_ASR_BACKEND=qwen3` for the legacy batch Qwen3 engine. An unknown value is shown as a load error; the app never silently falls back to a different model after a load or inference failure.
 
 ## Recognition behavior
 
-FluidAudio Nemotron emits a cumulative decode of an append-only RNN-T token stream. The app validates that every callback has the previous callback as a prefix and pastes only the new suffix immediately. It does not apply the legacy 5.1-second stability delay, trailing-word guard, or edit-distance realignment. If the prefix invariant fails, the changed hypothesis remains visible in the dictation UI and is logged, but the app does not guess at a replacement in the focused application.
+FluidAudio Parakeet Unified emits a cumulative decode of an append-only RNN-T token stream. The app validates that every callback has the previous callback as a prefix and pastes only the new suffix immediately. It does not apply the legacy 5.1-second stability delay, trailing-word guard, or edit-distance realignment. If the prefix invariant fails, the changed hypothesis remains visible in the dictation UI and is logged, but the app does not guess at a replacement in the focused application.
 
-FluidAudio finalizes only when push-to-talk is released. The app drains all captured recorder audio, then calls FluidAudio `finish()` exactly once; FluidAudio owns residual padding, so the app does not add a silent post-roll or load a separate VAD model. Qwen3-ASR and Speech Swift Nemotron retain the existing legacy processor, including its Silero VAD and stability handling where required.
+FluidAudio finalizes only when push-to-talk is released. The app drains all captured recorder audio, then calls FluidAudio `finish()` exactly once; FluidAudio flushes its held-back streaming context, so the app does not add a silent post-roll or load a separate VAD model. Qwen3-ASR and Speech Swift Nemotron retain the existing legacy processor, including its Silero VAD and stability handling where required.
 
 When the `speech-swift-nemotron` rollback backend is selected, NVIDIA supports 80, 160, 560, and 1120 ms runtime geometries, but the currently published Speech Swift English CoreML artifact is compiled for 160 ms. Chunk geometry is part of that CoreML encoder export, so buffering 560 ms in this app would not produce the 560 ms accuracy operating point. `DICTATE_NEMOTRON_MODEL_ID` can select a future Speech Swift-compatible English bundle compiled for 560 ms without changing app code; the active native geometry is logged at startup.
 
 Set `DICTATE_SAVE_DEBUG_AUDIO=1` in the app environment to retain the complete session and write `/tmp/dictate-debug.wav` when recording stops. Debug audio is disabled by default to avoid continuously growing memory use during dictation.
 
-The legacy backends use Silero VAD to finalize after about 960 ms of sustained silence. FluidAudio Nemotron instead finalizes explicitly when the push-to-talk key is released.
+The legacy backends use Silero VAD to finalize after about 960 ms of sustained silence. FluidAudio Parakeet Unified instead finalizes explicitly when the push-to-talk key is released.
 
 ### Batch-ASR performance settings
 

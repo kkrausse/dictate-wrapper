@@ -2,6 +2,10 @@ import XCTest
 @testable import DictateNemotron
 
 final class FluidStreamingPipelineTests: XCTestCase {
+    func testDefaultEngineUsesParakeetUnified1120ms() {
+        XCTAssertEqual(FluidAudioStreamingEngine.defaultModelVariant, .parakeetUnified1120ms)
+    }
+
     func testAudioCannotStartBeforeModelsLoad() async {
         let pipeline = makePipeline()
 

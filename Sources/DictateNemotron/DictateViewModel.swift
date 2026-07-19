@@ -333,6 +333,8 @@ final class DictateViewModel: ObservableObject {
     private let hotKeyActivationMode: GlobalHotKey.ActivationMode = .pushToTalk
     var modelLoaded: Bool {
         switch selectedEngine {
+        case .fluidParakeetUnified1120:
+            return fluidPipeline != nil
         case .fluidNemotron1120:
             return fluidPipeline != nil
         case .speechSwiftNemotron, .qwen3:
@@ -372,9 +374,20 @@ final class DictateViewModel: ObservableObject {
             let engine = try DictationEngine.selected()
             dlog("Selected dictation engine: \(engine.rawValue)")
             switch engine {
+            case .fluidParakeetUnified1120:
+                loadingStatus = "Loading Parakeet Unified 1120 ms..."
+                let pipeline = FluidStreamingPipeline { [weak self] event in
+                    self?.handleFluidPipelineEvent(event)
+                }
+                let displayName = try await pipeline.load()
+                fluidPipeline = pipeline
+                dlog("FluidAudio loaded: \(displayName), latency=1120ms")
+
             case .fluidNemotron1120:
                 loadingStatus = "Loading Nemotron 1120 ms..."
-                let pipeline = FluidStreamingPipeline { [weak self] event in
+                let pipeline = FluidStreamingPipeline(
+                    engine: FluidAudioStreamingEngine.legacyNemotron1120ms()
+                ) { [weak self] event in
                     self?.handleFluidPipelineEvent(event)
                 }
                 let displayName = try await pipeline.load()
@@ -427,7 +440,7 @@ final class DictateViewModel: ObservableObject {
                 }
             }
 
-            if engine != .fluidNemotron1120 {
+            if engine != .fluidParakeetUnified1120, engine != .fluidNemotron1120 {
                 loadingStatus = "Loading VAD..."
                 vad = try await Task.detached {
                     try await SileroVADModel.fromPretrained(engine: .coreml)
