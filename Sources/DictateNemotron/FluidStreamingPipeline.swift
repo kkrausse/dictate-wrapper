@@ -90,7 +90,6 @@ actor FluidStreamingPipeline {
     private let engine: any FluidStreamingEngine
     private let eventSink: @MainActor @Sendable (FluidStreamingPipelineEvent) -> Void
     private var cursor = AppendOnlyTranscriptCursor()
-    private var pendingAudio: [[Float]] = []
     private var drainTask: Task<Void, Never>?
     private var isLoaded = false
     private var isAcceptingAudio = false
@@ -99,12 +98,12 @@ actor FluidStreamingPipeline {
     private var sessionID = 0
 
     // Callers on the real-time audio thread cannot `await` into the actor
-    // synchronously, so `enqueueAudioAsync` hands audio off via an unstructured
-    // Task and records it here. `finishUtterance` awaits this handoff before
-    // finalizing, so a stop request can never race ahead of the last chunk of
-    // mic audio that was already captured.
+    // synchronously, so the tap appends captured chunks to this lock-guarded
+    // buffer before any Task hop. That fixes chunk order at capture time
+    // (unstructured Tasks carry no FIFO guarantee) and lets `finishUtterance`
+    // drain everything captured before stop without awaiting per-chunk Tasks.
     private let handoffLock = NSLock()
-    nonisolated(unsafe) private var latestEnqueueTask: Task<Void, Never>?
+    nonisolated(unsafe) private var handoffAudio: [[Float]] = []
 
     init(
         engine: any FluidStreamingEngine = FluidAudioStreamingEngine(),
@@ -123,6 +122,7 @@ actor FluidStreamingPipeline {
 
     func startUtterance() async throws -> Int {
         guard isLoaded else { throw FluidStreamingPipelineError.notLoaded }
+        clearHandoffAudio()
         isAcceptingAudio = true
         isFinishing = false
         try await beginSession()
@@ -131,30 +131,38 @@ actor FluidStreamingPipeline {
 
     func enqueueAudio(_ samples: [Float]) {
         guard isLoaded, isAcceptingAudio, !isFinishing, !samples.isEmpty else { return }
-        pendingAudio.append(samples)
-        guard drainTask == nil else { return }
-        drainTask = Task { [weak self] in
-            await self?.drainPendingAudio()
-        }
+        appendHandoffAudio(samples)
+        scheduleDrain()
     }
 
     /// Synchronous entry point for the audio tap callback, which runs on the
     /// real-time audio thread and cannot `await` directly into the actor.
+    /// The chunk lands in the handoff buffer before this returns; the Task
+    /// only wakes the drain loop.
     nonisolated func enqueueAudioAsync(_ samples: [Float]) {
-        let task = Task { await self.enqueueAudio(samples) }
-        setLatestEnqueueTask(task)
+        guard !samples.isEmpty else { return }
+        appendHandoffAudio(samples)
+        Task { await self.scheduleDrain() }
     }
 
-    nonisolated private func setLatestEnqueueTask(_ task: Task<Void, Never>) {
+    nonisolated private func appendHandoffAudio(_ samples: [Float]) {
         handoffLock.lock()
         defer { handoffLock.unlock() }
-        latestEnqueueTask = task
+        handoffAudio.append(samples)
     }
 
-    nonisolated private func takeLatestEnqueueTask() -> Task<Void, Never>? {
+    nonisolated private func takeHandoffAudio() -> [[Float]] {
         handoffLock.lock()
         defer { handoffLock.unlock() }
-        return latestEnqueueTask
+        let chunks = handoffAudio
+        handoffAudio.removeAll(keepingCapacity: true)
+        return chunks
+    }
+
+    nonisolated private func clearHandoffAudio() {
+        handoffLock.lock()
+        defer { handoffLock.unlock() }
+        handoffAudio.removeAll()
     }
 
     func finishUtterance() async throws {
@@ -162,25 +170,42 @@ actor FluidStreamingPipeline {
         isFinishing = true
         isAcceptingAudio = false
 
-        await takeLatestEnqueueTask()?.value
-
         if let drainTask {
             await drainTask.value
         }
+        // The tap appended synchronously, so every chunk captured before stop
+        // is in the handoff buffer even if its wake-up Task never ran.
+        let chunks = takeHandoffAudio()
         guard sessionIsOpen else { return }
+        await processChunks(chunks)
         try await finishCurrentSession()
     }
 
+    private func scheduleDrain() {
+        guard isLoaded, isAcceptingAudio, !isFinishing else { return }
+        guard drainTask == nil else { return }
+        drainTask = Task { [weak self] in
+            await self?.drainPendingAudio()
+        }
+    }
+
     private func drainPendingAudio() async {
-        while !pendingAudio.isEmpty {
-            let samples = pendingAudio.removeFirst()
+        while !isFinishing {
+            let chunks = takeHandoffAudio()
+            guard !chunks.isEmpty else { break }
+            await processChunks(chunks)
+        }
+        drainTask = nil
+    }
+
+    private func processChunks(_ chunks: [[Float]]) async {
+        for samples in chunks {
             do {
                 try await process(samples)
             } catch {
                 await emit(.failure(sessionID: sessionID, description: error.localizedDescription))
             }
         }
-        drainTask = nil
     }
 
     private func process(_ samples: [Float]) async throws {
