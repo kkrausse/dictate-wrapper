@@ -4,21 +4,60 @@ import NemotronStreamingASR
 import Qwen3ASR
 import SpeechVAD
 
-let logPath = "/tmp/dictate.log"
-let logLock = NSLock()
+/// Appends diagnostic lines to an owner-only log file in the user's Library
+/// through one persistent file handle. The log must never land in a shared
+/// world-readable location such as /tmp because it can describe dictated
+/// content.
+final class DictateLog: @unchecked Sendable {
+    static let shared = DictateLog()
+    static let logsTranscriptText =
+        ProcessInfo.processInfo.environment["DICTATE_LOG_TRANSCRIPTS"] == "1"
+
+    private let lock = NSLock()
+    private var handle: FileHandle?
+    private var hasResolvedHandle = false
+
+    func write(_ message: String) {
+        guard let data = "\(message)\n".data(using: .utf8) else { return }
+        lock.lock()
+        defer { lock.unlock() }
+        guard let handle = resolveHandle() else { return }
+        try? handle.write(contentsOf: data)
+    }
+
+    private func resolveHandle() -> FileHandle? {
+        if hasResolvedHandle { return handle }
+        hasResolvedHandle = true
+
+        let manager = FileManager.default
+        guard let library = manager.urls(for: .libraryDirectory, in: .userDomainMask).first
+        else { return nil }
+        let directory = library.appendingPathComponent("Logs/DictateNemotron", isDirectory: true)
+        let file = directory.appendingPathComponent("dictate.log")
+        try? manager.createDirectory(at: directory, withIntermediateDirectories: true)
+        if manager.fileExists(atPath: file.path) {
+            try? manager.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
+        } else {
+            manager.createFile(
+                atPath: file.path,
+                contents: nil,
+                attributes: [.posixPermissions: 0o600]
+            )
+        }
+        handle = try? FileHandle(forWritingTo: file)
+        _ = try? handle?.seekToEnd()
+        return handle
+    }
+}
 
 func dlog(_ message: String) {
-    logLock.lock()
-    defer { logLock.unlock() }
+    DictateLog.shared.write(message)
+}
 
-    guard let data = "\(message)\n".data(using: .utf8) else { return }
-    if let file = FileHandle(forWritingAtPath: logPath) {
-        file.seekToEndOfFile()
-        file.write(data)
-        file.closeFile()
-    } else {
-        FileManager.default.createFile(atPath: logPath, contents: data)
-    }
+/// Dictated text may only reach the log when the user opts in with
+/// DICTATE_LOG_TRANSCRIPTS=1; otherwise only its length is recorded.
+func transcriptForLog(_ text: String) -> String {
+    DictateLog.logsTranscriptText ? String(reflecting: text) : "<\(text.count) chars>"
 }
 
 private func logTimestamp() -> String {
@@ -224,7 +263,7 @@ final class ASRProcessor: @unchecked Sendable {
 
             dlog("asr: vad=\(speechActive) partials=\(partials.count)")
             if !partials.isEmpty {
-                dlog("ASR: \(partials.count) partials - '\(partials.map(\.text).joined(separator: ", "))'")
+                dlog("ASR: \(partials.count) partials - \(transcriptForLog(partials.map(\.text).joined(separator: ", ")))")
             }
             return (partials, speechActive)
         } catch {
@@ -262,7 +301,7 @@ final class ASRProcessor: @unchecked Sendable {
             dlog(
                 "[\(logTimestamp())] \(sessions.backendName) raw source=\(source) segment=\(partial.segmentIndex) "
                     + "final=\(partial.isFinal) boundary=\(partial.boundaryReason?.rawValue ?? "none") "
-                    + "text=\(String(reflecting: partial.text))"
+                    + "text=\(transcriptForLog(partial.text))"
             )
         }
     }
@@ -655,7 +694,7 @@ final class DictateViewModel: ObservableObject {
             partialText = update.cumulativeText
 
             if update.kind == .divergence {
-                dlog("FluidAudio append-only divergence session=\(sessionID): \(update.diagnostic ?? "unknown")")
+                dlog("FluidAudio append-only divergence session=\(sessionID): \(transcriptForLog(update.diagnostic ?? "unknown"))")
                 errorMessage = "FluidAudio transcript changed after text was pasted; keeping the changed text in the dictation window."
                 return
             }
@@ -667,13 +706,13 @@ final class DictateViewModel: ObservableObject {
             )
             if !insertionSucceeded {
                 errorMessage = "Could not insert dictated text into the active application."
-                dlog("FluidAudio insertion failed session=\(sessionID) delta=\(String(reflecting: update.textToInsert))")
+                dlog("FluidAudio insertion failed session=\(sessionID) delta=\(transcriptForLog(update.textToInsert))")
                 return
             }
 
             dlog(
                 "FluidAudio appended session=\(sessionID) final=\(update.isFinal) "
-                    + "delta=\(String(reflecting: update.textToInsert))"
+                    + "delta=\(transcriptForLog(update.textToInsert))"
             )
             if update.isFinal {
                 sentences.append(update.cumulativeText)
@@ -706,11 +745,13 @@ final class DictateViewModel: ObservableObject {
             at: now,
             forceFinalization: partial.isFinal
         )
-        let ages = partialCommitTracker.stableTokenAges(at: now)
+        let ages = DictateLog.logsTranscriptText
+            ? partialCommitTracker.stableTokenAges(at: now)
+            : "\(partialCommitTracker.state.stableTokens.count) tokens"
         dlog(
             "[\(logTimestamp())] PARTIAL segment=\(partial.segmentIndex) final=\(partial.isFinal) "
                 + "boundary=\(partial.boundaryReason?.rawValue ?? "none") behavior=\(observation.callbackBehavior.rawValue) "
-                + "alignment=\(observation.alignmentPoint) stable=[\(ages)] raw=\(String(reflecting: partial.text))"
+                + "alignment=\(observation.alignmentPoint) stable=[\(ages)] raw=\(transcriptForLog(partial.text))"
         )
         if let divergence = observation.divergence {
             dlog("[\(logTimestamp())] PARTIAL committed-prefix-divergence \(divergence)")
@@ -727,11 +768,11 @@ final class DictateViewModel: ObservableObject {
             if insertionSucceeded {
                 partialCommitTracker.didInsert(candidate)
                 dlog(
-                    "[\(logTimestamp())] PARTIAL committed delta=\(String(reflecting: candidate.renderedText)) "
+                    "[\(logTimestamp())] PARTIAL committed delta=\(transcriptForLog(candidate.renderedText)) "
                         + "words=\(candidate.tokenCount) final=\(partial.isFinal)"
                 )
             } else {
-                dlog("[\(logTimestamp())] PARTIAL insertion-failed delta=\(String(reflecting: candidate.renderedText))")
+                dlog("[\(logTimestamp())] PARTIAL insertion-failed delta=\(transcriptForLog(candidate.renderedText))")
                 errorMessage = "Could not insert dictated text into the active application."
             }
         } else if observation.candidate != nil {
@@ -774,7 +815,7 @@ final class DictateViewModel: ObservableObject {
             partialCommitTracker.didInsert(candidate)
             dlog(
                 "[\(logTimestamp())] PARTIAL force-finalize reason=\(reason) "
-                    + "alignment=\(observation.alignmentPoint) delta=\(String(reflecting: candidate.renderedText))"
+                    + "alignment=\(observation.alignmentPoint) delta=\(transcriptForLog(candidate.renderedText))"
             )
             partialCommitTracker.reset()
         } else {
