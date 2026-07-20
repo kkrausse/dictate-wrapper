@@ -98,6 +98,14 @@ actor FluidStreamingPipeline {
     private var sessionIsOpen = false
     private var sessionID = 0
 
+    // Callers on the real-time audio thread cannot `await` into the actor
+    // synchronously, so `enqueueAudioAsync` hands audio off via an unstructured
+    // Task and records it here. `finishUtterance` awaits this handoff before
+    // finalizing, so a stop request can never race ahead of the last chunk of
+    // mic audio that was already captured.
+    private let handoffLock = NSLock()
+    nonisolated(unsafe) private var latestEnqueueTask: Task<Void, Never>?
+
     init(
         engine: any FluidStreamingEngine = FluidAudioStreamingEngine(),
         eventSink: @escaping @MainActor @Sendable (FluidStreamingPipelineEvent) -> Void
@@ -130,10 +138,32 @@ actor FluidStreamingPipeline {
         }
     }
 
+    /// Synchronous entry point for the audio tap callback, which runs on the
+    /// real-time audio thread and cannot `await` directly into the actor.
+    nonisolated func enqueueAudioAsync(_ samples: [Float]) {
+        let task = Task { await self.enqueueAudio(samples) }
+        setLatestEnqueueTask(task)
+    }
+
+    nonisolated private func setLatestEnqueueTask(_ task: Task<Void, Never>) {
+        handoffLock.lock()
+        defer { handoffLock.unlock() }
+        latestEnqueueTask = task
+    }
+
+    nonisolated private func takeLatestEnqueueTask() -> Task<Void, Never>? {
+        handoffLock.lock()
+        defer { handoffLock.unlock() }
+        return latestEnqueueTask
+    }
+
     func finishUtterance() async throws {
         guard !isFinishing else { return }
         isFinishing = true
         isAcceptingAudio = false
+
+        await takeLatestEnqueueTask()?.value
+
         if let drainTask {
             await drainTask.value
         }
