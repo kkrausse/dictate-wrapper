@@ -1,29 +1,29 @@
-import XCTest
+import Testing
 @testable import DictateNemotron
 
-final class PartialCommitTrackerTests: XCTestCase {
+struct PartialCommitTrackerTests {
     private let clock = ContinuousClock()
 
-    func testCommitsStablePrefixAfterExactDurationAndKeepsTrailingGuard() {
+    @Test func commitsStablePrefixAfterExactDurationAndKeepsTrailingGuard() {
         var tracker = PartialCommitTracker()
         let start = clock.now
         let text = "one two three four five six"
 
-        XCTAssertNil(tracker.observe(text, at: start).candidate)
-        XCTAssertNil(tracker.observe(
+        #expect(tracker.observe(text, at: start).candidate == nil)
+        #expect(tracker.observe(
             text,
             at: start.advanced(by: PartialCommitTracker.stableDuration - .milliseconds(1))
-        ).candidate)
+        ).candidate == nil)
 
         let candidate = tracker.observe(
             text,
             at: start.advanced(by: PartialCommitTracker.stableDuration)
         ).candidate
-        XCTAssertEqual(candidate?.normalizedTokens, ["one", "two", "three"])
-        XCTAssertEqual(candidate?.renderedText, "one two three ")
+        #expect(candidate?.normalizedTokens == ["one", "two", "three"])
+        #expect(candidate?.renderedText == "one two three ")
     }
 
-    func testChangeResetsStabilityFromChangedPositionOnward() {
+    @Test func changeResetsStabilityFromChangedPositionOnward() {
         var tracker = PartialCommitTracker()
         let start = clock.now
         _ = tracker.observe("one two three four five six", at: start)
@@ -36,16 +36,16 @@ final class PartialCommitTrackerTests: XCTestCase {
             "one two changed four five six",
             at: start.advanced(by: .seconds(2))
         )
-        XCTAssertNil(tooEarly.candidate)
+        #expect(tooEarly.candidate == nil)
 
         let stableAgain = tracker.observe(
             "one two changed four five six",
             at: start.advanced(by: .seconds(1) + PartialCommitTracker.stableDuration)
         )
-        XCTAssertEqual(stableAgain.candidate?.normalizedTokens, ["one", "two", "changed"])
+        #expect(stableAgain.candidate?.normalizedTokens == ["one", "two", "changed"])
     }
 
-    func testInsertionResetsInsertedPositionAndFollowingTokens() {
+    @Test func insertionResetsInsertedPositionAndFollowingTokens() {
         var tracker = PartialCommitTracker()
         let start = clock.now
         _ = tracker.observe("one two three four five six", at: start)
@@ -58,10 +58,10 @@ final class PartialCommitTrackerTests: XCTestCase {
             "one two inserted three four five six",
             at: start.advanced(by: .seconds(2))
         )
-        XCTAssertNil(observation.candidate)
+        #expect(observation.candidate == nil)
     }
 
-    func testCapitalizationAndTrailingPunctuationPreserveStability() {
+    @Test func capitalizationAndTrailingPunctuationPreserveStability() {
         var tracker = PartialCommitTracker()
         let start = clock.now
         _ = tracker.observe("Hello, WORLD! four five six", at: start)
@@ -70,31 +70,30 @@ final class PartialCommitTrackerTests: XCTestCase {
             "hello world? four five six",
             at: start.advanced(by: PartialCommitTracker.stableDuration)
         )
-        XCTAssertEqual(observation.candidate?.normalizedTokens, ["hello", "world"])
-        XCTAssertEqual(observation.candidate?.renderedText, "hello world? ")
+        #expect(observation.candidate?.normalizedTokens == ["hello", "world"])
+        #expect(observation.candidate?.renderedText == "hello world? ")
     }
 
-    func testOrdinaryCommitRequiresTwoWordsOrTenCharacters() {
+    @Test func ordinaryCommitRequiresTwoWordsOrTenCharacters() {
         var shortTracker = PartialCommitTracker()
         let start = clock.now
         _ = shortTracker.observe("a b c d", at: start)
-        XCTAssertNil(shortTracker.observe(
+        #expect(shortTracker.observe(
             "a b c d",
             at: start.advanced(by: PartialCommitTracker.stableDuration)
-        ).candidate)
+        ).candidate == nil)
 
         var longTracker = PartialCommitTracker()
         _ = longTracker.observe("extraordinary b c d", at: start)
-        XCTAssertEqual(
+        #expect(
             longTracker.observe(
                 "extraordinary b c d",
                 at: start.advanced(by: PartialCommitTracker.stableDuration)
-            ).candidate?.normalizedTokens,
-            ["extraordinary"]
+            ).candidate?.normalizedTokens == ["extraordinary"]
         )
     }
 
-    func testStabilityEvidenceHasNoShortHistoryExpiry() {
+    @Test func stabilityEvidenceHasNoShortHistoryExpiry() {
         var tracker = PartialCommitTracker()
         let start = clock.now
         let text = "one two three four five six"
@@ -104,10 +103,10 @@ final class PartialCommitTrackerTests: XCTestCase {
             text,
             at: start.advanced(by: .seconds(60))
         )
-        XCTAssertEqual(observation.candidate?.normalizedTokens, ["one", "two", "three"])
+        #expect(observation.candidate?.normalizedTokens == ["one", "two", "three"])
     }
 
-    func testFinalizationCommitsAllRemainingTextAndResetsExplicitly() {
+    @Test func finalizationCommitsAllRemainingTextAndResetsExplicitly() throws {
         var tracker = PartialCommitTracker()
         let now = clock.now
         let observation = tracker.observe(
@@ -116,15 +115,15 @@ final class PartialCommitTrackerTests: XCTestCase {
             forceFinalization: true
         )
 
-        XCTAssertEqual(observation.candidate?.renderedText, "one two three")
-        tracker.didInsert(try! XCTUnwrap(observation.candidate))
-        XCTAssertEqual(tracker.state.committedNormalizedTokens, ["one", "two", "three"])
+        #expect(observation.candidate?.renderedText == "one two three")
+        tracker.didInsert(try #require(observation.candidate))
+        #expect(tracker.state.committedNormalizedTokens == ["one", "two", "three"])
         tracker.reset()
-        XCTAssertTrue(tracker.state.committedNormalizedTokens.isEmpty)
-        XCTAssertTrue(tracker.state.stableTokens.isEmpty)
+        #expect(tracker.state.committedNormalizedTokens.isEmpty)
+        #expect(tracker.state.stableTokens.isEmpty)
     }
 
-    func testFailedFinalInsertionDoesNotAdvanceOrResetState() {
+    @Test func failedFinalInsertionDoesNotAdvanceOrResetState() {
         var tracker = PartialCommitTracker()
         let observation = tracker.observe(
             "keep this text",
@@ -132,15 +131,15 @@ final class PartialCommitTrackerTests: XCTestCase {
             forceFinalization: true
         )
 
-        XCTAssertNotNil(observation.candidate)
+        #expect(observation.candidate != nil)
         // The caller only invokes didInsert and reset after destination
         // insertion succeeds.
-        XCTAssertEqual(tracker.state.latestPartial, "keep this text")
-        XCTAssertEqual(tracker.state.stableTokens.count, 3)
-        XCTAssertTrue(tracker.state.committedNormalizedTokens.isEmpty)
+        #expect(tracker.state.latestPartial == "keep this text")
+        #expect(tracker.state.stableTokens.count == 3)
+        #expect(tracker.state.committedNormalizedTokens.isEmpty)
     }
 
-    func testCumulativeFinalCommitsOnlySuffixAfterPartialCommit() throws {
+    @Test func cumulativeFinalCommitsOnlySuffixAfterPartialCommit() throws {
         var tracker = PartialCommitTracker()
         let start = clock.now
         let text = "one two three four five six"
@@ -149,7 +148,7 @@ final class PartialCommitTrackerTests: XCTestCase {
             text,
             at: start.advanced(by: PartialCommitTracker.stableDuration)
         )
-        tracker.didInsert(try XCTUnwrap(partial.candidate))
+        tracker.didInsert(try #require(partial.candidate))
 
         let final = tracker.observe(
             text,
@@ -157,24 +156,24 @@ final class PartialCommitTrackerTests: XCTestCase {
             forceFinalization: true
         )
 
-        XCTAssertEqual(final.candidate?.renderedText, "four five six")
-        XCTAssertEqual(final.candidate?.normalizedTokens, ["four", "five", "six"])
+        #expect(final.candidate?.renderedText == "four five six")
+        #expect(final.candidate?.normalizedTokens == ["four", "five", "six"])
     }
 
-    func testIdenticalWordsInConsecutiveUtterancesAreEachCommittedOnce() throws {
+    @Test func identicalWordsInConsecutiveUtterancesAreEachCommittedOnce() throws {
         var tracker = PartialCommitTracker()
         let text = "repeat these words"
 
         let first = tracker.observe(text, at: clock.now, forceFinalization: true)
-        XCTAssertEqual(first.candidate?.renderedText, text)
-        tracker.didInsert(try XCTUnwrap(first.candidate))
+        #expect(first.candidate?.renderedText == text)
+        tracker.didInsert(try #require(first.candidate))
         tracker.reset()
 
         let second = tracker.observe(text, at: clock.now, forceFinalization: true)
-        XCTAssertEqual(second.candidate?.renderedText, text)
+        #expect(second.candidate?.renderedText == text)
     }
 
-    func testDivergentCommittedPrefixAlignsWithoutReplayingCommittedWords() {
+    @Test func divergentCommittedPrefixAlignsWithoutReplayingCommittedWords() throws {
         var tracker = PartialCommitTracker()
         let start = clock.now
         let initial = "one two three four five six"
@@ -183,16 +182,16 @@ final class PartialCommitTrackerTests: XCTestCase {
             initial,
             at: start.advanced(by: PartialCommitTracker.stableDuration)
         )
-        tracker.didInsert(try! XCTUnwrap(ordinary.candidate))
+        tracker.didInsert(try #require(ordinary.candidate))
 
         let final = tracker.observe(
             "one changed three four five six seven",
             at: start.advanced(by: .seconds(2)),
             forceFinalization: true
         )
-        XCTAssertNotNil(final.divergence)
-        XCTAssertEqual(final.alignmentPoint, 3)
-        XCTAssertEqual(final.candidate?.normalizedTokens, ["four", "five", "six", "seven"])
-        XCTAssertEqual(final.candidate?.renderedText, "four five six seven")
+        #expect(final.divergence != nil)
+        #expect(final.alignmentPoint == 3)
+        #expect(final.candidate?.normalizedTokens == ["four", "five", "six", "seven"])
+        #expect(final.candidate?.renderedText == "four five six seven")
     }
 }

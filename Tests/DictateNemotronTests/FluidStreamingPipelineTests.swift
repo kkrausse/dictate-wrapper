@@ -1,25 +1,20 @@
-import XCTest
+import Testing
 @testable import DictateNemotron
 
-final class FluidStreamingPipelineTests: XCTestCase {
-    func testDefaultEngineUsesParakeetUnified1120ms() {
-        XCTAssertEqual(FluidAudioStreamingEngine.defaultModelVariant, .parakeetUnified1120ms)
+struct FluidStreamingPipelineTests {
+    @Test func defaultEngineUsesParakeetUnified1120ms() {
+        #expect(FluidAudioStreamingEngine.defaultModelVariant == .parakeetUnified1120ms)
     }
 
-    func testAudioCannotStartBeforeModelsLoad() async {
+    @Test func audioCannotStartBeforeModelsLoad() async {
         let pipeline = makePipeline()
 
-        do {
+        await #expect(throws: FluidStreamingPipelineError.notLoaded) {
             _ = try await pipeline.startUtterance()
-            XCTFail("Expected start to require model loading")
-        } catch let error as FluidStreamingPipelineError {
-            XCTAssertEqual(error, .notLoaded)
-        } catch {
-            XCTFail("Unexpected error: \(error)")
         }
     }
 
-    func testLoadIsIdempotent() async throws {
+    @Test func loadIsIdempotent() async throws {
         let engine = FakeFluidEngine()
         let pipeline = makePipeline(engine: engine)
 
@@ -27,10 +22,10 @@ final class FluidStreamingPipelineTests: XCTestCase {
         _ = try await pipeline.load()
 
         let loadCount = await engine.loadCount
-        XCTAssertEqual(loadCount, 1)
+        #expect(loadCount == 1)
     }
 
-    func testExplicitStopDrainsQueuedAudioBeforeFinishingExactlyOnce() async throws {
+    @Test func explicitStopDrainsQueuedAudioBeforeFinishingExactlyOnce() async throws {
         let engine = FakeFluidEngine()
         let pipeline = makePipeline(engine: engine)
 
@@ -43,12 +38,12 @@ final class FluidStreamingPipelineTests: XCTestCase {
         let appendCount = await engine.appendCount
         let processCount = await engine.processCount
         let finishCount = await engine.finishCount
-        XCTAssertEqual(appendCount, 1)
-        XCTAssertEqual(processCount, 1)
-        XCTAssertEqual(finishCount, 1)
+        #expect(appendCount == 1)
+        #expect(processCount == 1)
+        #expect(finishCount == 1)
     }
 
-    func testAudioDoesNotFinalizeUntilExplicitStop() async throws {
+    @Test func audioDoesNotFinalizeUntilExplicitStop() async throws {
         let engine = FakeFluidEngine()
         let pipeline = makePipeline(engine: engine)
 
@@ -59,8 +54,8 @@ final class FluidStreamingPipelineTests: XCTestCase {
 
         let finishCount = await engine.finishCount
         let resetCount = await engine.resetCount
-        XCTAssertEqual(finishCount, 1)
-        XCTAssertEqual(resetCount, 2)
+        #expect(finishCount == 1)
+        #expect(resetCount == 2)
     }
 
     private func makePipeline(engine: FakeFluidEngine = FakeFluidEngine()) -> FluidStreamingPipeline {

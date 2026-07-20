@@ -1,56 +1,56 @@
-import XCTest
+import Testing
 @testable import DictateNemotron
 
-final class AppendOnlyTranscriptCursorTests: XCTestCase {
-    func testEmptyAndRepeatedCallbacksDoNotInsert() {
+struct AppendOnlyTranscriptCursorTests {
+    @Test func emptyAndRepeatedCallbacksDoNotInsert() {
         var cursor = AppendOnlyTranscriptCursor()
 
-        XCTAssertEqual(cursor.observe("", isFinal: false).kind, .ignored)
-        XCTAssertEqual(cursor.observe("hello", isFinal: false).textToInsert, "hello")
-        XCTAssertEqual(cursor.observe("hello", isFinal: false).kind, .ignored)
+        #expect(cursor.observe("", isFinal: false).kind == .ignored)
+        #expect(cursor.observe("hello", isFinal: false).textToInsert == "hello")
+        #expect(cursor.observe("hello", isFinal: false).kind == .ignored)
     }
 
-    func testCumulativeExtensionsEmitOnlyTheNewSuffix() {
+    @Test func cumulativeExtensionsEmitOnlyTheNewSuffix() {
         var cursor = AppendOnlyTranscriptCursor()
 
-        XCTAssertEqual(cursor.observe("hello", isFinal: false).textToInsert, "hello")
-        XCTAssertEqual(cursor.observe("hello world", isFinal: false).textToInsert, " world")
-        XCTAssertEqual(cursor.emittedCharacterCount, "hello world".count)
+        #expect(cursor.observe("hello", isFinal: false).textToInsert == "hello")
+        #expect(cursor.observe("hello world", isFinal: false).textToInsert == " world")
+        #expect(cursor.emittedCharacterCount == "hello world".count)
     }
 
-    func testMultiPieceWordsPunctuationCapitalizationAndContractionsAreVerbatim() {
+    @Test func multiPieceWordsPunctuationCapitalizationAndContractionsAreVerbatim() {
         var cursor = AppendOnlyTranscriptCursor()
 
-        XCTAssertEqual(cursor.observe("I can", isFinal: false).textToInsert, "I can")
-        XCTAssertEqual(cursor.observe("I can't", isFinal: false).textToInsert, "'t")
-        XCTAssertEqual(cursor.observe("I can't believe", isFinal: false).textToInsert, " believe")
-        XCTAssertEqual(cursor.observe("I can't believe NASA", isFinal: false).textToInsert, " NASA")
-        XCTAssertEqual(cursor.observe("I can't believe NASA!", isFinal: false).textToInsert, "!")
+        #expect(cursor.observe("I can", isFinal: false).textToInsert == "I can")
+        #expect(cursor.observe("I can't", isFinal: false).textToInsert == "'t")
+        #expect(cursor.observe("I can't believe", isFinal: false).textToInsert == " believe")
+        #expect(cursor.observe("I can't believe NASA", isFinal: false).textToInsert == " NASA")
+        #expect(cursor.observe("I can't believe NASA!", isFinal: false).textToInsert == "!")
     }
 
-    func testFinalIdenticalPartialRequestsOnlyTrailingSpace() {
+    @Test func finalIdenticalPartialRequestsOnlyTrailingSpace() {
         var cursor = AppendOnlyTranscriptCursor()
 
         _ = cursor.observe("finished", isFinal: false)
         let update = cursor.observe("finished", isFinal: true)
 
-        XCTAssertEqual(update.kind, .appended)
-        XCTAssertEqual(update.textToInsert, "")
-        XCTAssertTrue(update.appendTrailingSpace)
-        XCTAssertTrue(update.isFinal)
+        #expect(update.kind == .appended)
+        #expect(update.textToInsert == "")
+        #expect(update.appendTrailingSpace)
+        #expect(update.isFinal)
     }
 
-    func testFinalWithRemainingSuffixEmitsItAndRequestsTrailingSpace() {
+    @Test func finalWithRemainingSuffixEmitsItAndRequestsTrailingSpace() {
         var cursor = AppendOnlyTranscriptCursor()
 
         _ = cursor.observe("hello", isFinal: false)
         let update = cursor.observe("hello world", isFinal: true)
 
-        XCTAssertEqual(update.textToInsert, " world")
-        XCTAssertTrue(update.appendTrailingSpace)
+        #expect(update.textToInsert == " world")
+        #expect(update.appendTrailingSpace)
     }
 
-    func testUnicodeStringIndexingEmitsWholeCharacters() {
+    @Test func unicodeStringIndexingEmitsWholeCharacters() {
         var cursor = AppendOnlyTranscriptCursor()
         let wave = "\u{1F44B}"
         let greeting = "hello " + wave
@@ -58,31 +58,31 @@ final class AppendOnlyTranscriptCursorTests: XCTestCase {
         _ = cursor.observe("hello ", isFinal: false)
         let update = cursor.observe(greeting, isFinal: false)
 
-        XCTAssertEqual(update.textToInsert, wave)
-        XCTAssertEqual(cursor.emittedCharacterCount, greeting.count)
+        #expect(update.textToInsert == wave)
+        #expect(cursor.emittedCharacterCount == greeting.count)
     }
 
-    func testPrefixDivergenceRefusesInsertionAndPreservesDiagnosticText() {
+    @Test func prefixDivergenceRefusesInsertionAndPreservesDiagnosticText() {
         var cursor = AppendOnlyTranscriptCursor()
 
         _ = cursor.observe("hello world", isFinal: false)
         let update = cursor.observe("hello there", isFinal: true)
 
-        XCTAssertEqual(update.kind, .divergence)
-        XCTAssertEqual(update.textToInsert, "")
-        XCTAssertFalse(update.appendTrailingSpace)
-        XCTAssertEqual(cursor.observedText, "hello world")
-        XCTAssertEqual(cursor.lastDivergentText, "hello there")
+        #expect(update.kind == .divergence)
+        #expect(update.textToInsert == "")
+        #expect(!update.appendTrailingSpace)
+        #expect(cursor.observedText == "hello world")
+        #expect(cursor.lastDivergentText == "hello there")
     }
 
-    func testResetStartsAnIndependentUtterance() {
+    @Test func resetStartsAnIndependentUtterance() {
         var cursor = AppendOnlyTranscriptCursor()
 
         _ = cursor.observe("repeat", isFinal: true)
         cursor.reset()
         let update = cursor.observe("repeat", isFinal: false)
 
-        XCTAssertEqual(update.textToInsert, "repeat")
-        XCTAssertEqual(cursor.emittedCharacterCount, "repeat".count)
+        #expect(update.textToInsert == "repeat")
+        #expect(cursor.emittedCharacterCount == "repeat".count)
     }
 }
