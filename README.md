@@ -156,7 +156,7 @@ The app appears as a microphone icon in the macOS menu bar rather than in the Do
 
 On first use, macOS asks for microphone and Accessibility access. Accessibility access is required to synthesize `Cmd+V` in the frontmost application. Development builds may need to be re-authorized after the executable changes. Permissions can be managed in **System Settings > Privacy & Security**.
 
-Diagnostic logs are written to `/tmp/dictate.log`. Debug audio is written to `/tmp/dictate-debug.wav` only when `DICTATE_SAVE_DEBUG_AUDIO=1`.
+Diagnostic logs are written to `~/Library/Logs/DictateNemotron/dictate.log` with owner-only permissions. Dictated text is redacted from the log (only lengths are recorded) unless `DICTATE_LOG_TRANSCRIPTS=1` is set. Debug audio is written to `/tmp/dictate-debug.wav` only when `DICTATE_SAVE_DEBUG_AUDIO=1`.
 
 ## Updating Submodules
 
