@@ -25,7 +25,7 @@ The app reads `DICTATE_ASR_BACKEND` once at startup. Omitting it, including when
 | `fluid-parakeet-unified-1120` | Parakeet Unified English 0.6B CoreML, 1120 ms | FluidAudio native streaming | `make run` |
 | `fluid-nemotron-1120` | Nemotron Speech Streaming English 0.6B CoreML, 1120 ms | FluidAudio native streaming | `DICTATE_ASR_BACKEND=fluid-nemotron-1120 make run` |
 | `speech-swift-nemotron` | Nemotron Speech Streaming English 0.6B CoreML, 160 ms artifact geometry | Speech Swift native streaming | `DICTATE_ASR_BACKEND=speech-swift-nemotron make run` |
-| `qwen3` | Qwen3-ASR 0.6B MLX 4-bit | Speech Swift batch adapter | `DICTATE_ASR_BACKEND=qwen3 make run` |
+| `qwen3` | Qwen3-ASR 0.6B MLX 4-bit | Speech Swift batch adapter | `make metal` once, then `DICTATE_ASR_BACKEND=qwen3 make run` |
 
 The FluidAudio models download and cache independently on their first use. The previous FluidAudio Nemotron backend downloads the `nemotron_coreml_1120ms` artifact from `FluidInference/nemotron-speech-streaming-en-0.6b-coreml` and caches it in `~/Library/Application Support/FluidAudio/Models/nemotron-streaming/1120ms`.
 
@@ -89,10 +89,12 @@ This is currently a Swift Package Manager development executable. Packaging, sig
 
 - Apple Silicon Mac
 - macOS 15 or newer
-- Xcode 16 or a compatible Swift 5.10+ toolchain
+- Xcode Command Line Tools with a Swift 5.10+ toolchain
 - Git
 
 The models are downloaded on first launch, so the first run requires a network connection and takes longer than subsequent launches.
+
+Full Xcode (not just Command Line Tools) and its Metal Toolchain component are only required for the `qwen3` backend, which runs on MLX's GPU path. See [Build](#build).
 
 ## Clone
 
@@ -111,13 +113,19 @@ git submodule update --init --recursive
 
 ## Build
 
-From the repository root, use the project build target so the MLX Metal shader library is compiled alongside the Swift executable:
-
 ```bash
 make build
 ```
 
-Plain `swift build` does not compile MLX's `mlx.metallib`; an executable built that way will fail when Qwen3-ASR first initializes the GPU.
+`make build` runs plain `swift build` and is all that's needed for the FluidAudio backends (`fluid-parakeet-unified-1120`, the default; `fluid-nemotron-1120`) and for `speech-swift-nemotron`. None of them touch MLX's GPU path.
+
+Only the `qwen3` backend needs MLX's compiled `mlx.metallib`, since Qwen3-ASR runs on MLX's GPU path. Build that separately, once, with:
+
+```bash
+make metal
+```
+
+`make metal` requires the Metal Toolchain, which is part of full Xcode (Xcode 16+), not Command Line Tools alone. If it's missing, install Xcode and run `xcodebuild -downloadComponent MetalToolchain`. Without it, an executable built with plain `swift build` will fail only when Qwen3-ASR first initializes the GPU — every other backend is unaffected.
 
 ## Run
 
@@ -127,7 +135,14 @@ Launch the development executable from the repository root:
 make run
 ```
 
-After `make build` has generated `.build/debug/mlx.metallib`, `swift run DictateNemotron` also works until the build directory is cleaned.
+`make run` depends on `make build`, not `make metal`. If you're using `DICTATE_ASR_BACKEND=qwen3`, run `make metal` first:
+
+```bash
+make metal
+DICTATE_ASR_BACKEND=qwen3 make run
+```
+
+After `make metal` has generated `.build/debug/mlx.metallib`, `swift run DictateNemotron` also works until the build directory is cleaned.
 
 The app appears as a microphone icon in the macOS menu bar rather than in the Dock.
 

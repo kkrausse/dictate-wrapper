@@ -1,5 +1,5 @@
 {
-  "originHash" : "864639146b220f3189554599bbf334935e8b75f2a1ee3071370776645ce6e4ac",
+  "originHash" : "04211ca7c83bf1f448ff74e936d2025c17af16bd9848b884bf46c280d5d8a521",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -116,6 +116,15 @@
       "state" : {
         "revision" : "a0cb0954ecb21e4e31b0070e6ed5674e8556685a",
         "version" : "1.6.0"
+      }
+    },
+    {
+      "identity" : "swift-configuration",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-configuration.git",
+      "state" : {
+        "revision" : "be76c4ad929eb6c4bcaf3351799f2adf9e6848a9",
+        "version" : "1.2.0"
       }
     },
     {
@@ -287,15 +296,6 @@
       "state" : {
         "revision" : "ca48d46c25f8fa948d37eaa480c73172182cf90f",
         "version" : "1.5.0"
-      }
-    },
-    {
-      "identity" : "swift-xet",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/huggingface/swift-xet.git",
-      "state" : {
-        "revision" : "341bfd4172f6a57119bfd49bafa11cf5d21fab75",
-        "version" : "0.2.3"
       }
     },
     {
