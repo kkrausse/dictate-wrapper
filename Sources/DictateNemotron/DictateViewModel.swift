@@ -605,7 +605,7 @@ final class DictateViewModel: ObservableObject {
                 }
                 fluidSessionID = sessionID
                 recorder.start { samples in
-                    Task { await pipeline.enqueueAudio(samples) }
+                    pipeline.enqueueAudioAsync(samples)
                 }
                 isRecording = true
                 dlog("FluidAudio recording started, session=\(sessionID)")
