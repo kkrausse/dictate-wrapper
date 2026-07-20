@@ -1,10 +1,10 @@
 import AppKit
-import XCTest
+import Testing
 @testable import DictateNemotron
 
 @MainActor
-final class ClipboardPreserverTests: XCTestCase {
-    func testRestoresAllItemsAndRepresentationsAfterTemporaryText() async throws {
+struct ClipboardPreserverTests {
+    @Test func restoresAllItemsAndRepresentationsAfterTemporaryText() async throws {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
         let customType = NSPasteboard.PasteboardType("com.example.dictate-test")
         let first = NSPasteboardItem()
@@ -19,19 +19,19 @@ final class ClipboardPreserverTests: XCTestCase {
             restorationDelay: .milliseconds(1)
         )
         preserver.beginSession()
-        XCTAssertTrue(preserver.writeTemporaryString("dictated"))
-        XCTAssertEqual(pasteboard.string(forType: .string), "dictated")
+        #expect(preserver.writeTemporaryString("dictated"))
+        #expect(pasteboard.string(forType: .string) == "dictated")
         preserver.finishSession()
 
         try await Task.sleep(for: .milliseconds(20))
-        let restored = try XCTUnwrap(pasteboard.pasteboardItems)
-        XCTAssertEqual(restored.count, 2)
-        XCTAssertEqual(restored[0].string(forType: .string), "original text")
-        XCTAssertEqual(restored[0].data(forType: customType), Data([0, 1, 2, 3]))
-        XCTAssertEqual(restored[1].data(forType: .png), Data([9, 8, 7]))
+        let restored = try #require(pasteboard.pasteboardItems)
+        #expect(restored.count == 2)
+        #expect(restored[0].string(forType: .string) == "original text")
+        #expect(restored[0].data(forType: customType) == Data([0, 1, 2, 3]))
+        #expect(restored[1].data(forType: .png) == Data([9, 8, 7]))
     }
 
-    func testRestoresAnInitiallyEmptyPasteboard() async throws {
+    @Test func restoresAnInitiallyEmptyPasteboard() async throws {
         let pasteboard = NSPasteboard(name: NSPasteboard.Name(UUID().uuidString))
         pasteboard.clearContents()
         let preserver = ClipboardPreserver(
@@ -40,10 +40,10 @@ final class ClipboardPreserverTests: XCTestCase {
         )
 
         preserver.beginSession()
-        XCTAssertTrue(preserver.writeTemporaryString("dictated"))
+        #expect(preserver.writeTemporaryString("dictated"))
         preserver.finishSession()
 
         try await Task.sleep(for: .milliseconds(20))
-        XCTAssertTrue(pasteboard.pasteboardItems?.isEmpty ?? true)
+        #expect(pasteboard.pasteboardItems?.isEmpty ?? true)
     }
 }

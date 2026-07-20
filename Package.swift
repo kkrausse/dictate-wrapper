@@ -1,6 +1,9 @@
-// swift-tools-version: 5.10
+// swift-tools-version: 6.0
 import PackageDescription
 
+// Tools version 6.0 is required so `swift test` can use the Swift Testing
+// library that ships with Command Line Tools (XCTest requires full Xcode).
+// The language mode stays at 5 until the targets adopt Swift 6 concurrency.
 let package = Package(
     name: "DictateNemotron",
     platforms: [.macOS("15.0")],
@@ -24,5 +27,6 @@ let package = Package(
             name: "DictateNemotronTests",
             dependencies: ["DictateNemotron"]
         ),
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )
