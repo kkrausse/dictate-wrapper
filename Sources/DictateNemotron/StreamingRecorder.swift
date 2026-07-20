@@ -13,7 +13,6 @@ final class StreamingRecorder {
     }
 
     private(set) var isRecording = false
-    private(set) var audioLevel: Float = 0
 
     private var audioEngine: AVAudioEngine?
     private var onChunk: (([Float]) -> Void)?
@@ -33,7 +32,6 @@ final class StreamingRecorder {
         callbackCount = 0
         totalSamples = 0
         callbackLock.unlock()
-        audioLevel = 0
 
         let engine = AVAudioEngine()
         let inputNode = engine.inputNode
@@ -74,9 +72,6 @@ final class StreamingRecorder {
             guard let channelData = convertedBuffer.floatChannelData else { return }
             let count = Int(convertedBuffer.frameLength)
             let data = Array(UnsafeBufferPointer(start: channelData[0], count: count))
-
-            let rms = sqrt(data.reduce(0) { $0 + $1 * $1 } / max(Float(count), 1))
-            DispatchQueue.main.async { self.audioLevel = rms }
 
             self.callbackLock.lock()
             self.onChunk?(data)
@@ -158,7 +153,6 @@ final class StreamingRecorder {
         callbackLock.unlock()
 
         isRecording = false
-        audioLevel = 0
         dlog(
             "Recorder stop drain: trigger=\(trigger) waited=\(String(format: "%.3f", waited))s "
                 + "drained=\(drainedSampleCount) total=\(capturedSamples) "
